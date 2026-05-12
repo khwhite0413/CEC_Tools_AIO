@@ -1,0 +1,14 @@
+PyQt5
+opencv-python
+numpy
+scipy
+Pillow
+einops
+timm
+pyyaml
+requests
+tqdm
+scikit-image
+matplotlib
+huggingface_hub
+imageio-ffmpeg

@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.log
+
+# Embedded runtime and downloaded artifacts (recreated by setup.bat)
+python/
+weights/
+ffmpeg/
+third_party/ProPainter/
+third_party/memfof/
+
+# Setup-downloaded fonts (Pretendard, OFL — fetched at setup time)
+assets/fonts/*.otf
+assets/fonts/*.ttf
+
+# Build / pack output
+FlowDenoise.zip
+CEC_AllInOne.zip
+.pytest_cache/
+
+# Runtime caches
+logs/
+cache/
+output/
+
+# Local-only experiments (web-based layout playground etc.)
+debug/
+
+# OS / IDE
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# App-generated output media
+*_denoised.*
+*_preview.*
+*_inpainted.*

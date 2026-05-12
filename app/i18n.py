@@ -1,0 +1,404 @@
+"""Lightweight i18n for CEC All-In-One (pure PyQt5).
+
+Translation dict + tr() lookup, persisted via QSettings("CEC_AllInOne").
+Scope is intentionally narrow — only the most visible UI strings.
+Internal log lines and error dialogs stay in their original language.
+"""
+
+from PyQt5.QtCore import QSettings
+
+
+KO = "ko"
+EN = "en"
+LANGS = (KO, EN)
+LANG_LABELS = {KO: "한국어", EN: "English"}
+
+
+_STRINGS = {
+    # Header / navigation
+    "tab_inpaint":    {"ko": "인페인트", "en": "Inpaint"},
+    "tab_denoise":    {"ko": "디노이즈", "en": "Denoise"},
+    "tab_about":      {"ko": "About",   "en": "About"},
+
+    # Inpaint page
+    "inpaint_preset_btn":   {"ko": "프리셋 ▼", "en": "Preset ▼"},
+    "inpaint_preset_dreamina": {"ko": "Dreamina (자동)", "en": "Dreamina (auto)"},
+    "inpaint_no_mask":      {"ko": "마스크 없음 — 프리셋 선택",
+                              "en": "No mask — pick a preset"},
+    "inpaint_mask_set":     {"ko": "마스크 적용됨",
+                              "en": "Mask applied"},
+    "inpaint_overlay_toggle": {"ko": "마스크 오버레이 표시",
+                                "en": "Show mask overlay"},
+    "inpaint_section_params": {"ko": "ProPainter 파라미터",
+                                "en": "ProPainter parameters"},
+    "inpaint_feather":      {"ko": "마스크 가장자리 부드럽게",
+                              "en": "Feather mask edges"},
+    "inpaint_fp16":         {"ko": "FP16 (CUDA만)", "en": "FP16 (CUDA only)"},
+    "inpaint_label_neighbor": {"ko": "Neighbor length", "en": "Neighbor length"},
+    "inpaint_label_ref_stride": {"ko": "Ref stride", "en": "Ref stride"},
+    "inpaint_label_subvideo": {"ko": "Subvideo length", "en": "Subvideo length"},
+    "inpaint_label_raft_iter": {"ko": "RAFT iterations", "en": "RAFT iterations"},
+    "inpaint_label_dilation": {"ko": "Mask dilation", "en": "Mask dilation"},
+    "inpaint_label_batch_frames": {"ko": "Max batch frames (0=전체)",
+                                    "en": "Max batch frames (0=all)"},
+    "inpaint_placeholder_output": {
+        "ko": "비워두면 자동: output/<원본>_inpainted.mp4",
+        "en": "Empty → output/<input>_inpainted.mp4"},
+    "inpaint_label_model":      {"ko": "모델", "en": "Model"},
+    "inpaint_model_propainter": {"ko": "ProPainter",
+                                  "en": "ProPainter"},
+
+    # Inpaint — parameter tooltips (shown on hover)
+    "inpaint_tooltip_model": {
+        "ko": ("비디오 인페인팅 모델 선택.<br>"
+               "<b>ProPainter</b>: 광학흐름 + 변형기 기반. 현재 유일한 모델."),
+        "en": ("Video inpainting model.<br>"
+               "<b>ProPainter</b>: optical-flow + transformer based. "
+               "Currently the only available option.")},
+    "inpaint_tooltip_batch_frames": {
+        "ko": ("한 번에 처리할 최대 프레임 수 (0 = 전체 한번에).<br>"
+               "긴 영상이나 VRAM이 부족할 때 분할 처리하세요. "
+               "<b>720p 16GB GPU 기준 ~200, 1080p ~80, 4K ~20</b>."),
+        "en": ("Max frames processed per batch (0 = all at once).<br>"
+               "Split long clips or when VRAM is tight. "
+               "<b>~200 for 720p 16GB / ~80 for 1080p / ~20 for 4K</b>.")},
+    "inpaint_tooltip_fp16": {
+        "ko": ("CUDA에서 FP16(반정밀) 추론 사용.<br>"
+               "<b>켜짐 (기본):</b> VRAM 절반, 1.5–2배 빠름<br>"
+               "<b>꺼짐:</b> FP32, 정확도 미세하게 높음, 더 느림<br>"
+               "CPU 모드에서는 무시됩니다."),
+        "en": ("Use FP16 half-precision inference on CUDA.<br>"
+               "<b>On (default):</b> half the VRAM, 1.5–2× faster<br>"
+               "<b>Off:</b> FP32, marginally more accurate, slower<br>"
+               "Ignored in CPU mode.")},
+    "inpaint_tooltip_feather": {
+        "ko": ("마스크 가장자리를 약간 부드럽게 처리 (1px 팽창 + 가우시안).<br>"
+               "워터마크 경계 잔상이 보이면 켜두는 게 안전합니다."),
+        "en": ("Soften mask edges slightly (1-px dilate + Gaussian blur).<br>"
+               "Reduces edge artifacts around the inpaint boundary.")},
+    "inpaint_tooltip_neighbor": {
+        "ko": ("현재 프레임 양옆에서 참조할 이웃 프레임 수 (기본 10).<br>"
+               "<b>높이면:</b> 시간적 일관성 ↑, VRAM ↑<br>"
+               "<b>낮추면:</b> 빠르지만 깜빡임 위험"),
+        "en": ("Neighbor frames consulted around the current frame "
+               "(default 10).<br>"
+               "<b>Higher:</b> better temporal consistency, more VRAM<br>"
+               "<b>Lower:</b> faster but risks flicker")},
+    "inpaint_tooltip_ref_stride": {
+        "ko": ("장거리 참조 프레임 간격 (기본 10).<br>"
+               "<b>작으면:</b> 더 많은 reference, VRAM ↑, 일관성 ↑<br>"
+               "<b>크면:</b> 빠르지만 변동 큰 장면에서 끊김"),
+        "en": ("Stride between long-range reference frames "
+               "(default 10).<br>"
+               "<b>Smaller:</b> more references, more VRAM, better "
+               "consistency<br>"
+               "<b>Larger:</b> faster but jittery on dynamic shots")},
+    "inpaint_tooltip_subvideo": {
+        "ko": ("한 번에 처리할 서브비디오 길이 (기본 80).<br>"
+               "<b>높이면:</b> 시간적 일관성 ↑, VRAM ↑<br>"
+               "<b>낮추면:</b> 메모리 절약, 경계에서 미세 변화 가능"),
+        "en": ("Sub-video chunk length (default 80).<br>"
+               "<b>Higher:</b> better consistency, more VRAM<br>"
+               "<b>Lower:</b> saves memory, slight seams at chunk borders")},
+    "inpaint_tooltip_raft_iter": {
+        "ko": ("RAFT 광학흐름 정밀화 반복 횟수 (기본 20).<br>"
+               "<b>높이면:</b> 모션 정확도 ↑, 처리 시간 ↑<br>"
+               "<b>낮추면:</b> 빠르지만 흐림/잔상 위험"),
+        "en": ("RAFT optical flow refinement iterations (default 20).<br>"
+               "<b>Higher:</b> better motion accuracy, slower<br>"
+               "<b>Lower:</b> faster but ghosting / blur risk")},
+    "inpaint_tooltip_dilation": {
+        "ko": ("마스크 팽창 픽셀 수 (기본 4).<br>"
+               "워터마크 가장자리를 살짝 더 가려서 경계 잔상을 줄입니다. "
+               "너무 키우면 인페인트 영역이 커져 품질 ↓."),
+        "en": ("Mask dilation in pixels (default 4).<br>"
+               "Expands the mask slightly to better cover watermark edges. "
+               "Too large = bigger inpaint area = quality ↓.")},
+    "tooltip_lang":   {"ko": "언어 변경", "en": "Language"},
+    "restart_to_apply": {"ko": "언어 변경: 재시작 후 적용됩니다.",
+                         "en": "Language: restart to apply."},
+
+    # Denoise page — left column
+    "info_no_video": {
+        "ko": "입력 비디오 없음 — 파일을 끌어다 놓거나 [파일 선택]",
+        "en": "No video loaded — drop a file or click [Choose file]"},
+    "btn_pick_file": {"ko": "파일 선택...", "en": "Choose file..."},
+    "label_output":  {"ko": "출력 경로",   "en": "Output path"},
+    "placeholder_output": {
+        "ko": "비워두면 자동: output/<원본>_denoised.<확장자>",
+        "en": "Empty → output/<input>_denoised.<ext>"},
+    "tooltip_output_path": {
+        "ko": "출력 파일 전체 경로. 비워두면 프로젝트의 output/ 폴더에 저장됩니다.",
+        "en": "Full output file path. If empty, saved to the project's output/ folder."},
+    "btn_browse":    {"ko": "찾아보기...", "en": "Browse..."},
+    "btn_preview":   {"ko": "미리보기 (앞 80프레임)",
+                      "en": "Preview (first 80 frames)"},
+    "btn_show_preview": {"ko": "이전 미리보기 다시 보기",
+                          "en": "Show last preview"},
+    "btn_run":       {"ko": "전체 처리", "en": "Process"},
+    "btn_cancel":    {"ko": "취소",     "en": "Cancel"},
+    "label_log":     {"ko": "로그",     "en": "Log"},
+    "btn_open_log":  {"ko": "로그 파일 열기", "en": "Open log file"},
+
+    # Right column
+    "section_temporal":      {"ko": "Temporal Flow Average",
+                              "en": "Temporal Flow Average"},
+    "section_noise_preview": {"ko": "노이즈 미리보기 (선택)",
+                              "en": "Noise preview (optional)"},
+    "checkbox_enable":       {"ko": "활성화", "en": "Enable"},
+    "noise_box_title": {
+        "ko": "노이즈 미리보기  ·  우클릭 → 다른 이름으로 저장",
+        "en": "Noise preview  ·  Right-click → Save As"},
+
+    # About page
+    "about_tagline": {"ko": "광학 흐름 기반 시간적 비디오 디노이저",
+                      "en": "Motion-compensated temporal video denoiser"},
+    "about_contact": {"ko": "Contact", "en": "Contact"},
+
+    # Cancellation summary (appears in eta label after Cancel)
+    "cancelled_summary": {
+        "ko": "처리됨 {done}/{total} · 소요 {elapsed:.1f}s · 취소됨",
+        "en": "Processed {done}/{total} · {elapsed:.1f}s elapsed · cancelled"},
+
+    # Completion summary (replaces "마감 처리 중..." once _on_finished
+    # fires, paired with a green progress-bar palette so the user can
+    # see at a glance that the run actually finished).
+    "finished_summary": {
+        "ko": "모든 처리 완료 · {done}/{total} · 소요 {elapsed:.1f}s",
+        "en": "All done · {done}/{total} · {elapsed:.1f}s elapsed"},
+
+    # Developer mode toggle (Temporal Flow Average card)
+    "label_dev_mode":   {"ko": "개발자 모드", "en": "Dev mode"},
+    "tooltip_dev_mode": {
+        "ko": "켜면 고정값으로 잠겨 있던 모든 파라미터가 노출됩니다.",
+        "en": "Toggle to expose every locked-default parameter."},
+
+    # Advanced parameter tooltips (only seen when dev mode is on)
+    "tooltip_weight_decay": {
+        "ko": ("이웃 프레임의 시간 가중치 감쇠율. 1.0 = 모든 거리 균등.<br>"
+               "<b>높이면 (0.9~1.0):</b> 노이즈 제거 강함, 잔상 위험 ↑<br>"
+               "<b>낮추면 (0.5~):</b> 디테일 보존, 노이즈 제거 약함"),
+        "en": ("Time weight decay across neighbors. 1.0 = uniform.<br>"
+               "<b>Higher (0.9-1.0):</b> stronger denoise, more ghosting risk<br>"
+               "<b>Lower (0.5-):</b> detail preservation, weaker denoise")},
+    "tooltip_flow_iterations": {
+        "ko": ("MEMFOF/RAFT 흐름 정밀화 반복 횟수.<br>"
+               "<b>높이면 (8~16):</b> 모션 정확도 ↑, 처리 시간 비례 증가<br>"
+               "<b>낮추면 (1~3):</b> 빠르지만 잔상/정렬 오차"),
+        "en": ("Optical flow refinement iterations.<br>"
+               "<b>Higher (8-16):</b> better motion accuracy, proportionally slower<br>"
+               "<b>Lower (1-3):</b> faster but more ghosting / misalignment")},
+    "tooltip_color_threshold": {
+        "ko": ("정렬된 이웃 프레임을 평균에 합칠 때 색 차이 임계치. "
+               "이보다 크면 outlier로 거절.<br>"
+               "<b>낮추면 (0.01~):</b> 엄격, 잔상 적음, 디노이즈 약함<br>"
+               "<b>높이면 (0.1+):</b> 관대, 디노이즈 강함, 잔상 위험"),
+        "en": ("Color similarity threshold for accepting warped neighbors. "
+               "Larger differences are rejected as outliers.<br>"
+               "<b>Lower (0.01-):</b> strict, less ghosting, weaker denoise<br>"
+               "<b>Higher (0.1+):</b> permissive, stronger denoise, ghosting risk")},
+    "tooltip_scene_threshold": {
+        "ko": ("씬 컷 검출 임계치 (프레임 간 MSE). 이보다 크면 컷으로 간주, "
+               "평균 중단.<br>"
+               "<b>낮추면 (0.01~):</b> 민감, 잘못된 컷 검출 → 디노이즈 약화<br>"
+               "<b>높이면 (0.1+):</b> 둔감, 실제 컷 무시 → 컷 경계 잔상"),
+        "en": ("Scene-cut threshold (inter-frame MSE). Above → treated as cut, "
+               "averaging stops.<br>"
+               "<b>Lower (0.01-):</b> sensitive, false cuts weaken denoise<br>"
+               "<b>Higher (0.1+):</b> insensitive, missed cuts cause boundary ghosting")},
+    "tooltip_precision": {
+        "ko": ("추론 정밀도.<br>"
+               "<b>bf16 (기본):</b> VRAM 절반, 1.5–2배 빠름, 시각 차이 거의 없음<br>"
+               "<b>fp32:</b> 엄격한 결정론적 결과, 약 2배 느림"),
+        "en": ("Inference precision.<br>"
+               "<b>bf16 (default):</b> half the VRAM, 1.5–2× faster, "
+               "visually indistinguishable<br>"
+               "<b>fp32:</b> strictly deterministic, ~2× slower")},
+    "tooltip_flow_scale": {
+        "ko": ("Flow 추정 시 입력 다운샘플 비율. warp는 항상 풀 해상도.<br>"
+               "<b>1.0:</b> 풀 해상도 flow, 가장 정확, 가장 느림<br>"
+               "<b>0.5 (기본):</b> 약 3배 빠름, 품질 거의 동등<br>"
+               "<b>0.3:</b> 매우 빠름, 정밀 모션엔 부정확"),
+        "en": ("Input downsample ratio for flow estimation; warp stays at full res.<br>"
+               "<b>1.0:</b> full-res flow, most accurate, slowest<br>"
+               "<b>0.5 (default):</b> ~3× faster, near-identical quality<br>"
+               "<b>0.3:</b> very fast, inaccurate on fine motion")},
+    "label_passthrough": {"ko": "Passthrough", "en": "Passthrough"},
+    "tooltip_passthrough": {
+        "ko": ("디노이즈를 완전히 끄고 read → write만 합니다 (디버깅용).<br>"
+               "<b>켜짐:</b> 입력 BGR을 그대로 인코더에 넘김. float 변환 / "
+               "TPDF dither / flow / temporal average 모두 건너뜀. "
+               "압축 외 색 변화가 있으면 그건 ffmpeg 인코드/디코드 자체의 문제.<br>"
+               "<b>꺼짐 (기본):</b> 정상 디노이즈 동작."),
+        "en": ("Skip denoise entirely — pure read → write (debug only).<br>"
+               "<b>On:</b> decoded BGR bytes go straight to the encoder. "
+               "No float conversion, no TPDF dither, no flow / temporal "
+               "averaging. Any color change other than compression is "
+               "purely from ffmpeg encode/decode.<br>"
+               "<b>Off (default):</b> normal denoise.")},
+    "tooltip_clamp_output": {
+        "ko": ("출력 픽셀 값을 [0,1] 범위로 클램프할지 여부.<br>"
+               "<b>켜짐 (기본):</b> 8-bit 인코딩에 안전한 표준 동작<br>"
+               "<b>꺼짐:</b> float 그대로 통과 (HDR / 분석용). "
+               "비디오로 저장할 땐 어차피 uint8로 클립되므로 시각 차이 없음."),
+        "en": ("Whether to clamp output pixel values to [0,1].<br>"
+               "<b>On (default):</b> safe for 8-bit encoding<br>"
+               "<b>Off:</b> pass float through unchanged (HDR / inspection). "
+               "Final video write still clips to uint8 anyway.")},
+
+    # Output format card
+    "section_output":         {"ko": "출력 세팅", "en": "Output Settings"},
+    "label_prores_profile":   {"ko": "ProRes 프로파일", "en": "ProRes Profile"},
+    # Shown in the Output Settings card — this is the effective fps
+    # the pipeline will use end-to-end. With Auto checked it mirrors
+    # the auto-detected source fps; with Auto unchecked the user's
+    # override value is shown instead. Distinct from the always-on
+    # "<file>.mp4 1470×630 @ 24.04fps · ..." info row, which is the
+    # raw source metadata.
+    "label_input_fps":        {"ko": "FPS", "en": "FPS"},
+    "label_fps_override":     {"ko": "FPS 강제", "en": "FPS Override"},
+    "label_fps_auto":         {"ko": "Auto", "en": "Auto"},
+    "fps_unknown":            {"ko": "(영상 없음)", "en": "(no video)"},
+    "tooltip_fps_override": {
+        "ko": ("입력 fps를 강제로 지정합니다. <b>Auto</b>는 자동 인식값 사용. "
+               "주로 AI 영상(Seedance 등) 메타데이터가 24.04 같은 어중간한 "
+               "값으로 나올 때 24.000으로 강제하는 용도. 0(=Auto)로 두면 "
+               "자동 인식값이 reader/writer 양쪽에 적용됩니다."),
+        "en": ("Force a specific input fps. <b>Auto</b> uses the auto-detected "
+               "value. Typical use: AI-generated mp4s (Seedance etc.) report "
+               "24.04 in metadata but are really 24.000 — set to 24.000 to "
+               "force. 0 (=Auto) uses the detected value for both reader "
+               "and writer.")},
+    "hint_preview_format_match": {
+        "ko": "미리보기도 같은 포맷으로 렌더됩니다",
+        "en": "Preview also renders in this format"},
+    "tooltip_output_format": {
+        "ko": ("본 작업의 출력 코덱.<br>"
+               "<b>H.264 MP4</b>: 작은 파일, 빠른 디코드, 일반 배포용<br>"
+               "<b>ProRes MOV</b>: 색감 보존, 후작업용 (파일 크기 큼)<br>"
+               "<b>PNG Sequence</b>: 폴더에 PNG 프레임 + meta.json. "
+               "코덱 손실 0, 비디오 컨테이너 무관"),
+        "en": ("Codec for the full run.<br>"
+               "<b>H.264 MP4</b>: small files, fast decode, general delivery<br>"
+               "<b>ProRes MOV</b>: color-accurate, post-production (large files)<br>"
+               "<b>PNG Sequence</b>: folder of PNG frames + meta.json, "
+               "zero codec loss, no container concerns")},
+    "tooltip_prores_profile": {
+        "ko": "Proxy/LT/422/HQ는 yuv422p10le, 4444 계열은 yuv444p10le로 인코딩",
+        "en": "Proxy/LT/422/HQ encode as yuv422p10le; 4444 variants as yuv444p10le"},
+
+    # Video player — placeholder + transport tooltips + context menu
+    "video_placeholder": {
+        "ko": "비디오를 불러오려면 클릭하거나 파일을 끌어다 놓으세요",
+        "en": "Click or drop a video file to load"},
+    "tooltip_first": {"ko": "처음으로", "en": "First frame"},
+    "tooltip_prev":  {"ko": "이전 프레임", "en": "Previous frame"},
+    "tooltip_play":  {"ko": "재생 / 일시정지 (Space)",
+                      "en": "Play / Pause (Space)"},
+    "tooltip_next":  {"ko": "다음 프레임", "en": "Next frame"},
+    "tooltip_last":  {"ko": "끝으로", "en": "Last frame"},
+    "tooltip_loop":  {"ko": "반복 재생", "en": "Loop playback"},
+    "tooltip_mute":  {"ko": "음소거", "en": "Mute"},
+    "tooltip_volume": {"ko": "음량", "en": "Volume"},
+    "menu_save_as":  {"ko": "다른 이름으로 저장...", "en": "Save As..."},
+    "noise_save_label": {"ko": "노이즈 미리보기", "en": "Noise preview"},
+
+    # Parameter tooltips
+    "tooltip_window_size": {
+        "ko": ("현재 프레임 좌우로 평균낼 이웃 프레임 수.<br>"
+               "<b>기본 3 권장</b> — 속도/품질 균형이 좋습니다.<br>"
+               "노이즈가 여전히 보이면 <b>5~7</b>로 높이세요.<br>"
+               "<i>클수록 처리 시간이 비례 증가하고, "
+               "빠르게 움직이는 장면에선 잔상 위험이 커집니다.</i>"),
+        "en": ("Number of neighbor frames to average on each side of the "
+               "current frame.<br>"
+               "<b>Default 3 recommended</b> — balanced speed and quality.<br>"
+               "Bump to <b>5–7</b> if noise is still visible.<br>"
+               "<i>Larger window = proportionally slower, and risks ghosting "
+               "on fast-motion shots.</i>")},
+    "tooltip_flow_model": {
+        "ko": "memfof = SOTA 2025 (가장 정확). raft_small = 빠름",
+        "en": "memfof = SOTA 2025 (most accurate). raft_small = faster"},
+    "tooltip_batch_size": {
+        "ko": (
+            "<b>MEMFOF 배치 크기 가이드</b> "
+            "(bf16 + flow_scale 0.5 기준)"
+            "<table cellpadding='4'>"
+            "<tr>"
+            "<td><b>해상도</b></td>"
+            "<td><b>RTX 5080<br>16GB</b></td>"
+            "<td><b>RTX 5090<br>32GB</b></td>"
+            "</tr>"
+            "<tr>"
+            "<td>720p</td>"
+            "<td align='center'>32</td>"
+            "<td align='center'>64</td>"
+            "</tr>"
+            "<tr>"
+            "<td>1080p</td>"
+            "<td align='center'>16</td>"
+            "<td align='center'>32</td>"
+            "</tr>"
+            "<tr>"
+            "<td>4K (UHD)</td>"
+            "<td align='center'>4</td>"
+            "<td align='center'>8</td>"
+            "</tr>"
+            "</table>"
+            "<i>표는 안전 권장값. 마지노선은 약 1.5–2배까지 가능하지만 "
+            "OOM 시 해당 작업만 실패합니다 (앱은 유지). 클수록 빠릅니다.</i>"),
+        "en": (
+            "<b>MEMFOF batch size guide</b> "
+            "(bf16 + flow_scale 0.5)"
+            "<table cellpadding='4'>"
+            "<tr>"
+            "<td><b>Resolution</b></td>"
+            "<td><b>RTX 5080<br>16GB</b></td>"
+            "<td><b>RTX 5090<br>32GB</b></td>"
+            "</tr>"
+            "<tr>"
+            "<td>720p</td>"
+            "<td align='center'>32</td>"
+            "<td align='center'>64</td>"
+            "</tr>"
+            "<tr>"
+            "<td>1080p</td>"
+            "<td align='center'>16</td>"
+            "<td align='center'>32</td>"
+            "</tr>"
+            "<tr>"
+            "<td>4K (UHD)</td>"
+            "<td align='center'>4</td>"
+            "<td align='center'>8</td>"
+            "</tr>"
+            "</table>"
+            "<i>Recommended safe values. Headroom up to ~1.5–2× before OOM "
+            "— OOM aborts only the current job, app stays alive. "
+            "Higher = faster.</i>")},
+    "tooltip_noise_enable": {
+        "ko": "켜면 처리 후 노이즈 시각화 영상을 우측 미니뷰어에 표시",
+        "en": "Show noise visualization in the mini-viewer after processing"},
+    "tooltip_noise_preview": {
+        "ko": "heatmap (turbo 색상) / signed (빨강=+, 파랑=-) / gray (0.5 중심)",
+        "en": "heatmap (turbo color) / signed (red=+, blue=-) / gray (centered at 0.5)"},
+}
+
+
+def _settings() -> QSettings:
+    return QSettings("AIMZ", "CEC_AllInOne")
+
+
+def get_lang() -> str:
+    val = _settings().value("ui/lang", KO, type=str)
+    return val if val in LANGS else KO
+
+
+def set_lang(lang: str) -> None:
+    if lang in LANGS:
+        _settings().setValue("ui/lang", lang)
+
+
+def tr(key: str) -> str:
+    lang = get_lang()
+    entry = _STRINGS.get(key, {})
+    return entry.get(lang) or entry.get(KO) or key

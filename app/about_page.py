@@ -5,7 +5,8 @@ import os
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QPixmap
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-                              QFrame, QPushButton, QScrollArea, QSizePolicy)
+                              QFrame, QPushButton, QScrollArea, QSizePolicy,
+                              QButtonGroup, QStackedWidget)
 
 from app.i18n import tr, get_lang
 
@@ -18,7 +19,7 @@ _LOGO_DIR = os.path.abspath(os.path.join(_HERE, "..", "assets", "logo"))
 # short paragraph — fanning that out into 20+ string keys clutters i18n
 # without making translation easier. Stays as (question, answer) tuples
 # per language.
-_FAQ_KO = [
+_FAQ_DENOISE_KO = [
     ("FlowDenoise가 뭔가요?",
      "AI로 뽑은 영상이나 촬영본에 끼는 지글거리는 노이즈를 떨어뜨려 주는 "
      "도구입니다. 한 프레임만 보고 처리하는 일반 디노이저와 달리, 앞뒤 프레임을 "
@@ -65,7 +66,7 @@ _FAQ_KO = [
      "신호예요."),
 ]
 
-_FAQ_EN = [
+_FAQ_DENOISE_EN = [
     ("What is FlowDenoise?",
      "A tool that scrubs the flickering noise out of AI-generated "
      "and live-shot footage. Unlike single-frame denoisers, it looks "
@@ -114,6 +115,125 @@ _FAQ_EN = [
      "channel. Healthy noise looks like flickering grain only; if "
      "you can make out face outlines or text, the threshold is too "
      "aggressive."),
+]
+
+
+# Inpaint FAQ — explains the crop-and-paste pipeline, preset matching,
+# and the dev-mode knobs. Detailed enough to answer "wait, why...".
+_FAQ_INPAINT_KO = [
+    ("인페인트가 영상을 통째로 처리하나요?",
+     "아니에요. 마스크가 있는 영역만 잘라서 (가장자리 50px 패딩 포함) 작은 "
+     "박스로 모델에 넣고, 결과를 원본 위에 다시 덮어쓰는 방식입니다. "
+     "워터마크 바깥 픽셀은 손실 0이고 처리 시간도 짧아져요. 4K 영상이라도 "
+     "워터마크 영역이 320×160 정도면 모델은 그 작은 박스만 봅니다."),
+
+    ("Dreamina 프리셋이 어떻게 자동으로 맞춰지나요?",
+     "입력 영상의 가로/세로 비율을 보고 가로 영상이면 가로용 PNG, 세로 "
+     "영상이면 9:16 PNG를 자동 선택합니다. 비율이 완전히 일치하면 그대로 "
+     "스케일링하고, 비율이 다르면 anchor 위치(Dreamina는 좌상단)에 맞춰 "
+     "배치합니다. 「가장자리 부드럽게」 옵션을 켜두면 마스크 경계에 1px "
+     "팽창 + 약한 가우시안 블러가 들어가서 경계 잔상이 줄어듭니다."),
+
+    ("ProPainter는 어떤 영상에서 잘 안 되나요?",
+     "(1) 카메라가 완전히 정지하고 피사체도 안 움직이는 정지 화면 — 인접 "
+     "프레임에서 정보 빌릴 게 없어서 결과가 흐릿함. (2) 마스크 영역이 화면의 "
+     "30% 이상처럼 너무 큰 경우. (3) 워터마크가 사람 얼굴이나 글자 같은 핵심 "
+     "정보를 가린 경우. 이런 케이스에선 결과가 어색해질 수 있습니다."),
+
+    ("개발자 모드의 neighbor / ref_stride / subvideo 옵션은 뭔가요?",
+     "ProPainter가 시간 일관성을 유지하려고 참조하는 이웃 프레임 수와 "
+     "간격입니다. 기본값(10 / 10 / 80)에서 결과가 잘 나오면 손대지 마세요. "
+     "VRAM 부족하면 subvideo를 60이나 40으로 줄이는 게 가장 효과적이에요."),
+]
+
+_FAQ_INPAINT_EN = [
+    ("Does inpainting process the whole frame?",
+     "No. Only the masked region (plus 50px padding) is cropped, fed "
+     "to the model as a small box, and the result is pasted back into "
+     "the original frame. Pixels outside the mask are untouched (zero "
+     "loss) and processing is much faster. Even on a 4K source, if the "
+     "watermark sits in a ~320×160 corner, the model only ever sees "
+     "that small box."),
+
+    ("How does the Dreamina preset auto-fit?",
+     "It checks the input video's aspect ratio. Landscape videos get "
+     "the landscape PNG, portrait get the 9:16 PNG. If the aspect "
+     "matches the preset, it scales 1:1. If not, it scales by the "
+     "smaller dimension and anchors at the preset's corner (top-left "
+     "for Dreamina). The «feather edges» option applies a 1-px dilate "
+     "+ light Gaussian blur to soften the mask boundary."),
+
+    ("When does ProPainter struggle?",
+     "(1) Truly static shots — no temporal context to borrow from, "
+     "so the inpaint comes out blurry. (2) Masks covering more than "
+     "~30% of the frame. (3) The watermark sits on important content "
+     "like faces or text. Results can look off in these cases."),
+
+    ("What are the neighbor / ref_stride / subvideo dev-mode options?",
+     "Number and spacing of frames ProPainter uses for temporal "
+     "consistency. Default 10 / 10 / 80 works for most cases. If "
+     "you hit VRAM limits, lowering subvideo to 60 or 40 is the most "
+     "effective single knob."),
+]
+
+
+# Upscale FAQ — answers the "why does it say downscale" question
+# explicitly, plus the resize-algorithm detail moved out of the tab UI.
+_FAQ_UPSCALE_KO = [
+    ("출력 해상도를 8K로 골라도 모델이 8K 처리를 하나요?",
+     "아니에요. OpenProteus는 2x 모델이라 항상 입력의 2배까지만 처리합니다. "
+     "사용자가 더 큰 해상도(예: 1080p 입력 + 8K 출력)를 골랐다면 모델이 "
+     "먼저 1080p → 2160p (2x) 결과를 만들고, cv2가 그 결과를 한 번 더 "
+     "키워서 8K로 출력합니다. 반대로 더 작은 해상도(예: 1080p 입력 + "
+     "1080p 출력)를 골랐다면 모델이 2160p를 만든 다음 cv2가 1080p로 "
+     "줄여서 출력해요."),
+
+    ("마지막 리사이즈는 어떤 알고리즘을 쓰나요?",
+     "모델 결과보다 더 키울 때는 OpenCV의 Lanczos4 (8×8 커널, 4 lobes), "
+     "줄일 때는 Area 보간을 씁니다. Lanczos는 신경망 결과의 미세 디테일을 "
+     "살리는 데 강하고, Area는 모아레/링잉 없이 깨끗하게 다운샘플합니다. "
+     "DaVinci Resolve나 Premiere 같은 NLE 도구들이 흔히 쓰는 조합이에요."),
+
+    ("OpenProteus는 어떤 영상에 잘 맞나요?",
+     "노이즈가 적고 깨끗한 HD/FHD 라이브액션 영상을 4K로 늘릴 때 가장 잘 "
+     "작동합니다. 오버샤프닝이나 아티팩트가 거의 없어요. 노이즈가 많은 "
+     "영상이라면 디노이즈 탭에서 먼저 처리한 다음 업스케일을 적용하는 "
+     "걸 권장합니다."),
+
+    ("4K나 8K 출력을 골랐는데 처리가 너무 느려요.",
+     "출력 해상도가 클수록 픽셀 수가 기하급수적으로 늘어 ffmpeg 인코딩과 "
+     "디스크 쓰기 시간이 오래 걸립니다. 모델 추론 자체는 입력 해상도에 "
+     "비례하지만, 1080p 입력에서 8K 출력이면 추가 cv2 리사이즈도 무거워져요. "
+     "빠른 결과가 필요하면 Native(원본 × 2)를 추천합니다."),
+]
+
+_FAQ_UPSCALE_EN = [
+    ("If I pick 8K target, does the model actually run at 8K?",
+     "No. OpenProteus is fixed at 2x — it always produces a 2× version "
+     "of the input. If you pick a larger target (e.g., 1080p input + 8K "
+     "output), the model first makes 1080p → 2160p, and then cv2 "
+     "enlarges that 2160p further to 8K. If you pick a smaller target "
+     "(e.g., 1080p input + 1080p output), the model still makes 2160p "
+     "and cv2 downsamples it back to 1080p."),
+
+    ("What algorithm does the final resize use?",
+     "When enlarging beyond the model's 2× output, OpenCV Lanczos4 "
+     "(8×8 kernel, 4 lobes). When shrinking, OpenCV Area interpolation. "
+     "Lanczos preserves the model's fine detail well; Area downsamples "
+     "cleanly without moiré or ringing. This is the standard combo "
+     "most NLEs (DaVinci Resolve, Premiere) ship."),
+
+    ("What sources does OpenProteus suit best?",
+     "Clean, low-noise HD/FHD live-action footage going to 4K. No "
+     "oversharpening, no ringing. For noisy sources, run the Denoise "
+     "tab first, then Upscale."),
+
+    ("Why is 4K/8K output so slow?",
+     "Pixel counts grow with the square of resolution, so ffmpeg "
+     "encoding and disk writes get heavy at higher targets. Model "
+     "inference scales with the input size, but for 1080p → 8K the "
+     "additional cv2 enlargement step also costs more. If you want a "
+     "fast result, pick Native (source × 2)."),
 ]
 
 
@@ -204,14 +324,14 @@ class AboutPage(QWidget):
         self._logo_label.setStyleSheet("border: none; background: transparent;")
         card_lay.addWidget(self._logo_label, 0, Qt.AlignHCenter)
 
-        title = QLabel("FlowDenoise")
+        title = QLabel("CEC All-In-One")
         title.setAlignment(Qt.AlignCenter)
         title.setStyleSheet(
             "font-size: 20px; font-weight: 700; "
             "border: none; background: transparent;")
         card_lay.addWidget(title)
 
-        version = QLabel("v1.0.0")
+        version = QLabel("v0.1.0")
         version.setAlignment(Qt.AlignCenter)
         version.setStyleSheet(
             "color: rgba(150, 154, 170, 200); "
@@ -262,7 +382,16 @@ class AboutPage(QWidget):
     # right column — FAQ
     # ------------------------------------------------------------------
     def _build_faq(self) -> QWidget:
-        entries = _FAQ_KO if get_lang() == "ko" else _FAQ_EN
+        # Three-level structure per the design:
+        #   large card (this FAQ wrap)
+        #   ↳ medium card: sub-tabs Inpaint | Denoise | Upscale
+        #     ↳ small cards: drawer-style _FaqItem rows
+        is_ko = get_lang() == "ko"
+        sections = [
+            ("inpaint", _FAQ_INPAINT_KO if is_ko else _FAQ_INPAINT_EN),
+            ("denoise", _FAQ_DENOISE_KO if is_ko else _FAQ_DENOISE_EN),
+            ("upscale", _FAQ_UPSCALE_KO if is_ko else _FAQ_UPSCALE_EN),
+        ]
 
         wrap = QFrame()
         wrap.setStyleSheet(
@@ -275,32 +404,70 @@ class AboutPage(QWidget):
         wrap_lay.setContentsMargins(20, 18, 20, 18)
         wrap_lay.setSpacing(8)
 
-        header = QLabel("FAQ" if get_lang() == "en" else "자주 묻는 질문")
+        header = QLabel("FAQ" if not is_ko else "자주 묻는 질문")
         header.setStyleSheet(
             "font-size: 15px; font-weight: 700; "
             "border: none; background: transparent;"
             "padding-bottom: 4px;")
         wrap_lay.addWidget(header)
 
-        # Scrollable list — once a few entries get expanded the FAQ
-        # can grow taller than the visible area.
+        # Sub-tab bar (Inpaint / Denoise / Upscale) — same checkable
+        # QPushButton pattern as the main window's top tabs, smaller font.
+        sub_tab_qss = (
+            "QPushButton {"
+            "  background: transparent;"
+            "  border: none;"
+            "  padding: 4px 10px;"
+            "  font-size: 9pt;"
+            "  color: rgba(200, 204, 220, 160);"
+            "}"
+            "QPushButton:hover { color: rgba(220, 224, 240, 240); }"
+            "QPushButton:checked {"
+            "  color: rgba(220, 224, 240, 255);"
+            "  border-bottom: 2px solid #7aa2f7;"
+            "  font-weight: 600;"
+            "}"
+        )
+        tab_bar = QHBoxLayout()
+        tab_bar.setContentsMargins(0, 0, 0, 4)
+        tab_bar.setSpacing(4)
+        self._faq_group = QButtonGroup(wrap)
+        self._faq_group.setExclusive(True)
+        self._faq_stack = QStackedWidget()
+        for idx, (key, entries) in enumerate(sections):
+            btn = QPushButton(tr(f"about_subtab_{key}"))
+            btn.setCheckable(True)
+            btn.setChecked(idx == 0)
+            btn.setStyleSheet(sub_tab_qss)
+            btn.clicked.connect(
+                lambda _, i=idx: self._faq_stack.setCurrentIndex(i))
+            self._faq_group.addButton(btn)
+            tab_bar.addWidget(btn)
+            self._faq_stack.addWidget(self._build_faq_list(entries))
+        tab_bar.addStretch(1)
+        wrap_lay.addLayout(tab_bar)
+        wrap_lay.addWidget(self._faq_stack, 1)
+
+        return wrap
+
+    @staticmethod
+    def _build_faq_list(entries) -> QWidget:
+        """Single sub-tab page: scrollable column of drawer-style FAQ rows."""
         scroll = QScrollArea()
         scroll.setFrameShape(QFrame.NoFrame)
         scroll.setWidgetResizable(True)
-        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
-
-        list_host = QWidget()
-        list_host.setStyleSheet("background: transparent;")
-        list_lay = QVBoxLayout(list_host)
-        list_lay.setContentsMargins(0, 0, 0, 0)
-        list_lay.setSpacing(6)
+        scroll.setStyleSheet(
+            "QScrollArea { background: transparent; border: none; }")
+        host = QWidget()
+        host.setStyleSheet("background: transparent;")
+        lay = QVBoxLayout(host)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(6)
         for q, a in entries:
-            list_lay.addWidget(_FaqItem(q, a))
-        list_lay.addStretch(1)
-
-        scroll.setWidget(list_host)
-        wrap_lay.addWidget(scroll, 1)
-        return wrap
+            lay.addWidget(_FaqItem(q, a))
+        lay.addStretch(1)
+        scroll.setWidget(host)
+        return scroll
 
     def refresh_logo(self):
         path = os.path.join(_LOGO_DIR, "aimz_white.png")

@@ -86,10 +86,41 @@ def get_original_bitrate(path):
     return 8_000_000
 
 
+def auto_format_from_codec(codec_name):
+    """Pick an output codec that matches the source.
+
+    Used when the user leaves "Auto" selected in the output-format
+    dropdown. ProRes-tagged sources stay on ProRes (preserves quality
+    across multi-step Inpaint → Denoise → Upscale chains); everything
+    else gets h264 (ubiquitous, smaller files).
+    """
+    s = (codec_name or "").lower()
+    if "prores" in s:
+        return "prores"
+    return "h264"
+
+
+# ffmpeg profile ids for prores_ks — kept narrow; the Inpaint/Upscale
+# tabs don't expose profile selection (only Denoise does). HQ + yuv422p10le
+# is the sane default for "preserve quality" intermediates.
+_PRORES_PROFILE_ID = {
+    "proxy": "0", "lt": "1", "standard": "2",
+    "hq": "3", "4444": "4", "4444xq": "5",
+}
+_PRORES_PROFILE_4444 = {"4444", "4444xq"}
+
+
 class FFmpegWriter:
     def __init__(self, output_path, fps, width, height, source_path=None,
-                 color_tags=None):
-        """Pipe BGR24 frames into ffmpeg → libx264 mp4.
+                 color_tags=None,
+                 output_format="h264", prores_profile="hq"):
+        """Pipe BGR24 frames into ffmpeg.
+
+        output_format:
+            "h264"   — libx264 + yuv420p + AAC audio (default).
+            "prores" — prores_ks intra codec (yuv422p10le for 422 profiles,
+                       yuv444p10le for 4444). PCM_s16le audio. Larger files
+                       but no inter-frame quality loss in chained workflows.
 
         color_tags: optional dict {primaries, trc, matrix, range}. When all
         three of primaries/trc/matrix are present, output is tagged to
@@ -120,39 +151,59 @@ class FFmpegWriter:
         if source_path:
             cmd += ["-i", source_path, "-map", "0:v", "-map", "1:a?"]
 
-        base_h264 = [
-            "-c:v", "libx264",
-            "-b:v", str(bitrate),
-            "-maxrate", str(int(bitrate * 1.5)),
-            "-bufsize", str(int(bitrate * 2)),
-            "-preset", "medium", "-pix_fmt", "yuv420p",
-        ]
+        if output_format == "prores":
+            profile_id = _PRORES_PROFILE_ID.get(prores_profile,
+                                                 _PRORES_PROFILE_ID["hq"])
+            pix_fmt = ("yuv444p10le" if prores_profile in _PRORES_PROFILE_4444
+                       else "yuv422p10le")
+            base_codec = [
+                "-c:v", "prores_ks",
+                "-profile:v", profile_id,
+                "-vendor", "apl0",
+                "-pix_fmt", pix_fmt,
+            ]
+            audio_codec = ["-c:a", "pcm_s16le"]
+        else:  # h264
+            base_codec = [
+                "-c:v", "libx264",
+                "-b:v", str(bitrate),
+                "-maxrate", str(int(bitrate * 1.5)),
+                "-bufsize", str(int(bitrate * 2)),
+                "-preset", "medium", "-pix_fmt", "yuv420p",
+            ]
+            audio_codec = ["-c:a", "aac"]
 
         if full_tags is not None:
             matrix = full_tags["matrix"]
             primaries = full_tags["primaries"]
             trc = full_tags["trc"]
             src_range = (full_tags.get("range") or "").lower()
-            range_scale = {"tv": "tv", "pc": "full",
-                           "limited": "tv", "full": "full"}.get(src_range, "tv")
-            range_tag = "tv" if range_scale == "tv" else "pc"
+            # ProRes spec mandates tv range; for h264 we follow the source.
+            if output_format == "prores":
+                range_scale = "tv"
+                range_tag = "tv"
+            else:
+                range_scale = {"tv": "tv", "pc": "full",
+                               "limited": "tv", "full": "full"
+                               }.get(src_range, "tv")
+                range_tag = "tv" if range_scale == "tv" else "pc"
             cmd += [
                 "-vf",
                 f"scale=out_color_matrix={matrix}:out_range={range_scale}"
                 f":flags=accurate_rnd+full_chroma_int",
-                *base_h264,
+                *base_codec,
                 "-color_range", range_tag,
                 "-colorspace", matrix,
                 "-color_primaries", primaries,
                 "-color_trc", trc,
                 "-movflags", "+write_colr",
-                "-c:a", "aac", "-shortest",
+                *audio_codec, "-shortest",
                 output_path,
             ]
         else:
             cmd += [
-                *base_h264,
-                "-c:a", "aac", "-shortest",
+                *base_codec,
+                *audio_codec, "-shortest",
                 output_path,
             ]
 

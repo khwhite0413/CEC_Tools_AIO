@@ -12,3 +12,4 @@ scikit-image
 matplotlib
 huggingface_hub
 imageio-ffmpeg
+spandrel

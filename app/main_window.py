@@ -23,6 +23,8 @@ from app.video_player import VideoPlayer
 from app.workers import DenoiseWorker, PreviewWorker, derive_output_path, probe_video
 from app.about_page import AboutPage
 from app.inpaint_page import InpaintPage
+from app.upscale_page import UpscalePage
+from app.chatbot_panel import ChatbotOverlay
 from app.i18n import tr, get_lang, set_lang, LANGS, LANG_LABELS
 
 
@@ -44,6 +46,14 @@ _PREVIEW_CACHE_FILES = (
     # on Windows. We stage a copy here so the user can freely rename /
     # move / delete the real output in output/ during the session.
     "result_view.mp4", "result_view.mov",
+    # Inpaint + Upscale tabs do the same — each tab stages its result
+    # into a tab-specific cache file so the deliverable in output/ stays
+    # writable while the player has its cv2 handle open. Two extensions
+    # because the user can pick H.264 (.mp4) or ProRes (.mov) per tab.
+    "inpaint_view.mp4", "inpaint_view.mov",
+    "upscale_view.mp4", "upscale_view.mov",
+    # Inpaint preview output (first ~80 frames, forced h264 mp4).
+    "inpaint_preview.mp4",
 )
 _PREVIEW_CACHE_DIRS = ("preview_seq", "result_view_seq")
 
@@ -135,14 +145,21 @@ class MainWindow(QMainWindow):
 
         self.inpaint_page = InpaintPage()
         self.denoise_page = self._build_denoise_page()
+        self.upscale_page = UpscalePage()
         self.about_page = AboutPage()
-        # Tab order: 0 = Inpaint, 1 = Denoise, 2 = About.
+        # Tab order: 0 = Inpaint, 1 = Denoise, 2 = Upscale, 3 = About.
         self.stack.addWidget(self.inpaint_page)
         self.stack.addWidget(self.denoise_page)
+        self.stack.addWidget(self.upscale_page)
         self.stack.addWidget(self.about_page)
 
         self._log("CEC All-In-One 시작.")
         self._log_torch_status()
+
+        # Floating chatbot overlay — bubble + popup pinned to bottom-right,
+        # stays visible across tab switches because it's a direct child of
+        # the central widget (sibling of the QStackedWidget, raised above it).
+        self.chatbot = ChatbotOverlay(central)
 
     # ------------------------------------------------------------------
     # Header
@@ -181,15 +198,21 @@ class MainWindow(QMainWindow):
         self.btn_tab_denoise.setCheckable(True)
         self.btn_tab_denoise.setStyleSheet(_TAB_BTN_QSS)
         self.btn_tab_denoise.clicked.connect(lambda: self.stack.setCurrentIndex(1))
+        self.btn_tab_upscale = QPushButton(tr("tab_upscale"))
+        self.btn_tab_upscale.setCheckable(True)
+        self.btn_tab_upscale.setStyleSheet(_TAB_BTN_QSS)
+        self.btn_tab_upscale.clicked.connect(lambda: self.stack.setCurrentIndex(2))
         self.btn_tab_about = QPushButton(tr("tab_about"))
         self.btn_tab_about.setCheckable(True)
         self.btn_tab_about.setStyleSheet(_TAB_BTN_QSS)
-        self.btn_tab_about.clicked.connect(lambda: self.stack.setCurrentIndex(2))
+        self.btn_tab_about.clicked.connect(lambda: self.stack.setCurrentIndex(3))
         self.tab_group.addButton(self.btn_tab_inpaint)
         self.tab_group.addButton(self.btn_tab_denoise)
+        self.tab_group.addButton(self.btn_tab_upscale)
         self.tab_group.addButton(self.btn_tab_about)
         h.addWidget(self.btn_tab_inpaint)
         h.addWidget(self.btn_tab_denoise)
+        h.addWidget(self.btn_tab_upscale)
         h.addWidget(self.btn_tab_about)
 
         h.addStretch(1)
@@ -367,9 +390,19 @@ class MainWindow(QMainWindow):
     def dropEvent(self, e: QDropEvent):
         for url in e.mimeData().urls():
             p = url.toLocalFile()
-            if p:
+            if not p:
+                continue
+            # Route the drop to whichever tab is currently in front. The
+            # About tab has nothing to do with a video file, so drops on
+            # it fall through to the denoise default.
+            idx = self.stack.currentIndex()
+            if idx == 0:
+                self.inpaint_page._set_video(p)
+            elif idx == 2:
+                self.upscale_page._set_video(p)
+            else:
                 self._set_video(p)
-                break
+            break
 
     def _set_video(self, path: str):
         if not os.path.isfile(path):
@@ -711,6 +744,15 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "FlowDenoise",
                                 f"로그 파일을 열지 못했습니다:\n{e}")
 
+    def resizeEvent(self, e):
+        # Keep the floating chatbot bubble + popup pinned to bottom-right
+        # whenever the window resizes (maximize, restore, manual drag).
+        super().resizeEvent(e)
+        try:
+            self.chatbot.reposition()
+        except Exception:
+            pass
+
     def closeEvent(self, e):
         if self.worker is not None and self.worker.isRunning():
             self._log("종료 중 — 작업을 취소합니다...")
@@ -733,6 +775,10 @@ class MainWindow(QMainWindow):
             pass
         try:
             self.inpaint_page.shutdown()
+        except Exception:
+            pass
+        try:
+            self.upscale_page.shutdown()
         except Exception:
             pass
         # Force the cv2 caps to drop their Windows file handles before we

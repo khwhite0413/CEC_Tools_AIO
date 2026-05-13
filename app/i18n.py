@@ -18,7 +18,84 @@ _STRINGS = {
     # Header / navigation
     "tab_inpaint":    {"ko": "인페인트", "en": "Inpaint"},
     "tab_denoise":    {"ko": "디노이즈", "en": "Denoise"},
+    "tab_upscale":    {"ko": "업스케일", "en": "Upscale"},
     "tab_about":      {"ko": "About",   "en": "About"},
+
+    # Upscale page
+    "upscale_section_params":  {"ko": "Upscale 파라미터",
+                                 "en": "Upscale parameters"},
+    "upscale_label_model":     {"ko": "모델", "en": "Model"},
+    "upscale_label_batch_frames": {
+        "ko": "Max batch frames (0=전체)",
+        "en": "Max batch frames (0=all)"},
+    "upscale_model_openproteus": {
+        "ko": "OpenProteus 2x (Compact)",
+        "en": "OpenProteus 2x (Compact)"},
+    "upscale_no_preview":      {"ko": "비디오를 불러오면 출력 해상도가 표시됩니다.",
+                                 "en": "Load a video to see the output resolution."},
+    # Plain-language preview. The user sees the input, the model's
+    # intermediate 2x result, and then how the final size is reached —
+    # no jargon (Lanczos / Area / "downscale" of a 720→1080 step) here.
+    # Internals live in the About > FAQ > Upscale tab instead.
+    "upscale_preview_native":   {
+        "ko": "{src_w}×{src_h} → 모델이 2배로 키워 {mid_w}×{mid_h} → 그대로 출력",
+        "en": "{src_w}×{src_h} → model enlarges 2× to {mid_w}×{mid_h} → final"},
+    "upscale_preview_downscale": {
+        "ko": "{src_w}×{src_h} → 모델이 2배로 키워 {mid_w}×{mid_h} → "
+              "{dst_w}×{dst_h}로 줄여서 출력",
+        "en": "{src_w}×{src_h} → model enlarges 2× to {mid_w}×{mid_h} → "
+              "resized down to {dst_w}×{dst_h}"},
+    "upscale_preview_upscale":   {
+        "ko": "{src_w}×{src_h} → 모델이 2배로 키워 {mid_w}×{mid_h} → "
+              "{dst_w}×{dst_h}로 더 키워서 출력",
+        "en": "{src_w}×{src_h} → model enlarges 2× to {mid_w}×{mid_h} → "
+              "enlarged further to {dst_w}×{dst_h}"},
+    "upscale_label_target":    {"ko": "출력 해상도", "en": "Target resolution"},
+    "upscale_target_native":   {"ko": "원본 × 2 (Native)",
+                                 "en": "Source × 2 (Native)"},
+    "upscale_target_info_fmt":  {
+        "ko": "예상: {w} × {h}  ·  {ar_w}:{ar_h}",
+        "en": "Expected: {w} × {h}  ·  {ar_w}:{ar_h}"},
+    "upscale_target_info_empty": {
+        "ko": "예상: 비디오를 불러오면 표시됩니다",
+        "en": "Expected: load a video to see"},
+    "upscale_tooltip_target": {
+        "ko": ("최종 출력의 긴 변 길이.<br>"
+               "<b>Native:</b> 모델 결과 그대로 (1080p → 2160p)<br>"
+               "다른 값을 고르면 모델 결과를 그 해상도에 맞춰 출력합니다."),
+        "en": ("Final output long-edge length.<br>"
+               "<b>Native:</b> use the model's 2× output as-is "
+               "(1080p → 2160p)<br>"
+               "Any other choice resizes the model's result to that "
+               "resolution.")},
+    "upscale_placeholder_output": {
+        "ko": "비워두면 자동: output/<원본>_upscaled.mp4",
+        "en": "Empty → output/<input>_upscaled.mp4"},
+    "upscale_tooltip_model": {
+        "ko": ("업스케일 모델 선택.<br>"
+               "<b>OpenProteus 2x</b>: Sirosky가 공개한 Compact 아키텍처. "
+               "고품질·저노이즈 HD 소스의 4K 업스케일에 특화. "
+               "오버샤프닝/아티팩트 없음."),
+        "en": ("Upscale model.<br>"
+               "<b>OpenProteus 2x</b>: Compact-architecture model by Sirosky. "
+               "Tuned for clean HD → 4K upscaling without oversharpening "
+               "or artifacts.")},
+    "upscale_tooltip_batch_frames": {
+        "ko": ("한 번에 읽을 최대 프레임 수 (0 = 전체 한번에). "
+               "각 프레임은 순차적으로 모델에 들어갑니다.<br>"
+               "긴 영상이나 메모리가 부족할 때 분할 처리하세요."),
+        "en": ("Max frames read per batch (0 = all at once). Frames go "
+               "through the model one by one within the batch.<br>"
+               "Split long clips or when memory is tight.")},
+    "upscale_tooltip_fp16": {
+        "ko": ("CUDA에서 FP16(반정밀) 추론 사용.<br>"
+               "<b>켜짐 (기본):</b> VRAM 절반, 1.5–2배 빠름<br>"
+               "<b>꺼짐:</b> FP32, 정확도 미세하게 높음, 더 느림<br>"
+               "CPU 모드에서는 무시됩니다."),
+        "en": ("Use FP16 half-precision inference on CUDA.<br>"
+               "<b>On (default):</b> half the VRAM, 1.5–2× faster<br>"
+               "<b>Off:</b> FP32, marginally more accurate, slower<br>"
+               "Ignored in CPU mode.")},
 
     # Inpaint page
     "inpaint_preset_btn":   {"ko": "프리셋 ▼", "en": "Preset ▼"},
@@ -44,6 +121,18 @@ _STRINGS = {
     "inpaint_placeholder_output": {
         "ko": "비워두면 자동: output/<원본>_inpainted.mp4",
         "en": "Empty → output/<input>_inpainted.mp4"},
+    "inpaint_btn_edit_mask": {"ko": "마스크 편집", "en": "Edit mask"},
+
+    # Mask editor dialog
+    "mask_editor_title": {"ko": "마스크 편집", "en": "Edit mask"},
+    "mask_tool_brush":   {"ko": "브러시",  "en": "Brush"},
+    "mask_tool_rect":    {"ko": "사각형",  "en": "Rectangle"},
+    "mask_tool_ellipse": {"ko": "원형",    "en": "Ellipse"},
+    "mask_tool_eraser":  {"ko": "지우개",  "en": "Eraser"},
+    "mask_brush_size":   {"ko": "크기",    "en": "Size"},
+    "mask_undo":         {"ko": "실행 취소", "en": "Undo"},
+    "mask_clear":        {"ko": "모두 지우기", "en": "Clear all"},
+    "mask_apply":        {"ko": "적용",    "en": "Apply"},
     "inpaint_label_model":      {"ko": "모델", "en": "Model"},
     "inpaint_model_propainter": {"ko": "ProPainter",
                                   "en": "ProPainter"},
@@ -151,9 +240,70 @@ _STRINGS = {
         "en": "Noise preview  ·  Right-click → Save As"},
 
     # About page
-    "about_tagline": {"ko": "광학 흐름 기반 시간적 비디오 디노이저",
-                      "en": "Motion-compensated temporal video denoiser"},
+    "about_tagline": {"ko": "AI 영상 후처리 통합 도구 — 인페인트 · 디노이즈 · 업스케일",
+                      "en": "All-in-one AI video post-processing — inpaint, denoise, upscale"},
     "about_contact": {"ko": "Contact", "en": "Contact"},
+    "about_subtab_inpaint":  {"ko": "인페인트", "en": "Inpaint"},
+    "about_subtab_denoise":  {"ko": "디노이즈", "en": "Denoise"},
+    "about_subtab_upscale":  {"ko": "업스케일", "en": "Upscale"},
+
+    # Output format card — shared by Inpaint + Upscale (Denoise has its
+    # own richer card in parameter_panel.py).
+    "io_section_format":   {"ko": "출력 포맷", "en": "Output format"},
+    "io_label_codec":      {"ko": "코덱", "en": "Codec"},
+    "io_format_auto":      {"ko": "Auto (소스 따라감)",
+                             "en": "Auto (follow source)"},
+    "io_format_h264":      {"ko": "H.264 MP4", "en": "H.264 MP4"},
+    "io_format_prores":    {"ko": "ProRes MOV", "en": "ProRes MOV"},
+    "io_label_prores_profile": {"ko": "ProRes 프로파일",
+                                 "en": "ProRes profile"},
+    "io_tooltip_prores_profile": {
+        "ko": ("ProRes 프로파일 선택. 위로 갈수록 비트레이트 ↑, 파일 크기 ↑.<br>"
+               "<b>Proxy:</b> 최저 비트레이트, 미리보기용<br>"
+               "<b>LT:</b> 작은 파일, 일반 후작업<br>"
+               "<b>422:</b> 표준 후작업<br>"
+               "<b>422 HQ:</b> 고품질 후작업<br>"
+               "<b>4444 (기본):</b> 알파/색 보존, 합성용<br>"
+               "<b>4444 XQ:</b> 최고 품질"),
+        "en": ("ProRes profile. Bitrate / file size grows top to bottom.<br>"
+               "<b>Proxy:</b> lowest bitrate, preview only<br>"
+               "<b>LT:</b> small files, general post<br>"
+               "<b>422:</b> standard post<br>"
+               "<b>422 HQ:</b> high-quality post<br>"
+               "<b>4444 (default):</b> alpha + color preserved, compositing<br>"
+               "<b>4444 XQ:</b> highest quality")},
+    "io_tooltip_format": {
+        "ko": ("출력 코덱 선택.<br>"
+               "<b>Auto:</b> 소스가 ProRes면 ProRes, 아니면 H.264로 출력. "
+               "다단계 워크플로우(인페인트 → 디노이즈 → 업스케일)에서 매번 "
+               "h264 재압축으로 인한 화질 손실을 막으려면 첫 단계만 ProRes로 "
+               "지정하면 이후 Auto가 ProRes를 유지합니다.<br>"
+               "<b>H.264 MP4:</b> 작은 파일, 일반 배포용. 재압축마다 손실 발생.<br>"
+               "<b>ProRes MOV:</b> 색감 보존, 후작업/체이닝용. 파일 크기 큼."),
+        "en": ("Output codec.<br>"
+               "<b>Auto:</b> ProRes-tagged sources stay on ProRes, "
+               "everything else gets H.264. In multi-step workflows "
+               "(Inpaint → Denoise → Upscale), set the first stage to "
+               "ProRes and subsequent Auto stages will preserve it — "
+               "avoids quality loss from repeated h264 re-encoding.<br>"
+               "<b>H.264 MP4:</b> small files, general delivery. Lossy "
+               "on each re-encode.<br>"
+               "<b>ProRes MOV:</b> color-accurate, post-production / "
+               "chaining. Larger files.")},
+
+    # Chatbot
+    "chatbot_tooltip":     {"ko": "도우미 챗봇 열기",
+                             "en": "Open assistant"},
+    "chatbot_title":       {"ko": "도우미 챗봇", "en": "Assistant"},
+    "chatbot_placeholder": {"ko": "메시지를 입력하세요... (Enter 전송 / Shift+Enter 줄바꿈)",
+                             "en": "Type a message... (Enter to send, Shift+Enter for newline)"},
+    "chatbot_send":        {"ko": "전송", "en": "Send"},
+    "chatbot_greeting":    {"ko": "안녕하세요! CEC All-In-One 사용법이나 일반 질문 "
+                                  "무엇이든 물어보세요.",
+                             "en": "Hi! Ask me anything about CEC All-In-One "
+                                   "or general questions."},
+    "chatbot_error":       {"ko": "오류: {err}", "en": "Error: {err}"},
+    "chatbot_thinking":    {"ko": "생각 중...", "en": "Thinking..."},
 
     # Cancellation summary (appears in eta label after Cancel)
     "cancelled_summary": {

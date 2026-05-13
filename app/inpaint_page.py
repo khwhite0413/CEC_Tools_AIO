@@ -5,6 +5,7 @@ comes from a fixed preset (currently: Dreamina AI watermark removal).
 """
 
 import os
+import shutil
 import time
 
 import cv2
@@ -16,18 +17,39 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                               QPlainTextEdit, QMessageBox, QScrollArea,
                               QSplitter, QLineEdit, QGroupBox, QSpinBox,
                               QCheckBox, QToolButton, QMenu, QFrame,
-                              QFormLayout, QComboBox)
+                              QFormLayout, QComboBox, QSizePolicy, QDialog)
 
 from app.i18n import tr
 from app.video_player import VideoPlayer
 from app.inpaint_worker import InpaintWorker
+from app.mask_editor_dialog import MaskEditorDialog
 from vdcore.config import get_device, weights_available
+from vdcore.video_io import auto_format_from_codec
 
 
 _MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.abspath(os.path.join(_MODULE_DIR, ".."))
 _PRESETS_DIR = os.path.join(_PROJECT_ROOT, "presets")
 _OUTPUT_DIR = os.path.join(_PROJECT_ROOT, "output")
+_CACHE_DIR = os.path.join(_PROJECT_ROOT, "cache")
+
+# Frame count for the [미리보기] button — matches the Denoise tab's
+# 80-frame preview so iteration on params is fast across both tabs.
+PREVIEW_FRAMES = 80
+_PREVIEW_CACHE_NAME = "inpaint_preview.mp4"
+# Viewer-only copy of the final deliverable. Same rationale as the
+# Denoise tab: cv2's VideoPlayer keeps a file handle and would lock the
+# real output in output/ on Windows. MainWindow's preview-cache sweep
+# (start + close) deletes this on next launch / shutdown.
+_VIEWER_CACHE_NAME = "inpaint_view.mp4"
+
+# ProRes profile choices — mirrors fdcore parameter_panel so all three
+# tabs offer the same profile options.
+_PRORES_KEYS = ("proxy", "lt", "standard", "hq", "4444", "4444xq")
+_PRORES_LABELS = {
+    "proxy": "Proxy", "lt": "LT", "standard": "422",
+    "hq": "422 HQ", "4444": "4444", "4444xq": "4444 XQ",
+}
 
 
 # Mirror of VDInpaint's PRESETS dict — extend here when adding new
@@ -51,8 +73,12 @@ class InpaintPage(QWidget):
 
         self.video_path = None
         self.video_info = None  # (h, w, fps, frame_count)
+        self.video_codec = ""    # populated by _set_video via fdcore probe
         self.current_mask = None  # uint8 H x W, full-frame
         self.worker = None
+        # Distinguishes preview vs full run in _on_finished — preview
+        # output lives in cache/ and shouldn't be re-staged.
+        self._is_preview = False
         self._t_start = 0.0
         self._last_done = 0
         self._last_total = 0
@@ -116,6 +142,14 @@ class InpaintPage(QWidget):
         self.preset_btn.setFixedHeight(28)
         preset_row.addWidget(self.preset_btn, 0)
 
+        # Manual brush editor — opens a modal dialog with the video's
+        # first frame and brush/rect/ellipse/eraser tools so the user
+        # can paint a custom mask when no preset fits.
+        self.btn_edit_mask = QPushButton(tr("inpaint_btn_edit_mask"))
+        self.btn_edit_mask.setFixedHeight(28)
+        self.btn_edit_mask.clicked.connect(self._open_mask_editor)
+        preset_row.addWidget(self.btn_edit_mask, 0)
+
         self.mask_status = QLabel(tr("inpaint_no_mask"))
         self.mask_status.setStyleSheet(
             "color: rgba(180,184,200,200); padding-left: 6px;")
@@ -132,12 +166,15 @@ class InpaintPage(QWidget):
         lay.addLayout(preset_row)
 
         btn_row = QHBoxLayout()
+        self.btn_preview = QPushButton(tr("btn_preview"))
+        self.btn_preview.clicked.connect(lambda: self._run(preview=True))
         self.btn_run = QPushButton(tr("btn_run"))
         self.btn_run.setStyleSheet("font-weight: bold;")
         self.btn_run.clicked.connect(self._run)
         self.btn_cancel = QPushButton(tr("btn_cancel"))
         self.btn_cancel.clicked.connect(self._cancel)
         self.btn_cancel.setEnabled(False)
+        btn_row.addWidget(self.btn_preview)
         btn_row.addWidget(self.btn_run)
         btn_row.addWidget(self.btn_cancel)
         lay.addLayout(btn_row)
@@ -171,11 +208,19 @@ class InpaintPage(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(12)
 
+        # QGroupBox (plain — no setStyleSheet) so Qt keeps the QComboBox
+        # and QSpinBox children in Fusion-native rendering. Setting a
+        # stylesheet on the parent QFrame would push descendants into
+        # QSS rendering mode, which makes the dropdown chrome go solid
+        # black. FD's Output-Settings card uses the same plain-QGroupBox
+        # approach for exactly this reason; only its Temporal-Flow-
+        # Average card (which has no always-visible dropdowns) uses the
+        # stylesheet-driven QFrame#TfaCard pattern.
         params_box = QGroupBox(tr("inpaint_section_params"))
+        params_box.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         params_lay = QVBoxLayout(params_box)
         params_lay.setSpacing(8)
 
-        # Header row: dev-mode toggle on the right, like the denoise tab.
         head = QHBoxLayout()
         head.addStretch(1)
         self.dev_mode = QCheckBox(tr("label_dev_mode"))
@@ -186,6 +231,13 @@ class InpaintPage(QWidget):
         # --- Always-visible row: model + max_batch_frames ---
         basic = QFormLayout()
         basic.setLabelAlignment(Qt.AlignRight)
+        # SetMinAndMaxSize makes the form report a tight bounding height
+        # so the parent Card frame hugs only what's visible — without this
+        # FD-style constraint the Card grows past its content.
+        basic.setSizeConstraint(QFormLayout.SetMinAndMaxSize)
+        basic.setContentsMargins(0, 0, 0, 0)
+        basic.setHorizontalSpacing(10)
+        basic.setVerticalSpacing(6)
 
         self.model_combo = QComboBox()
         self.model_combo.addItem(tr("inpaint_model_propainter"), "propainter")
@@ -204,22 +256,26 @@ class InpaintPage(QWidget):
         params_lay.addLayout(basic)
 
         # --- Dev-mode-only rows (hidden by default) ---
-        adv = QFormLayout()
+        # Wrapped in a QWidget so QFormLayout's row geometry collapses
+        # when dev_mode is off. Hiding individual children would still
+        # leave each row's vertical slot reserved.
+        self._adv_widget = QWidget()
+        adv = QFormLayout(self._adv_widget)
         adv.setLabelAlignment(Qt.AlignRight)
-
-        self._adv_widgets = []  # collected so _apply_dev_mode can toggle
+        adv.setContentsMargins(0, 0, 0, 0)
+        adv.setSizeConstraint(QFormLayout.SetMinAndMaxSize)
+        adv.setHorizontalSpacing(10)
+        adv.setVerticalSpacing(6)
 
         def _add_adv_row(label_key: str, tip_key: str, widget):
             widget.setToolTip(tr(tip_key))
             lbl = QLabel(tr(label_key))
             lbl.setToolTip(tr(tip_key))
             adv.addRow(lbl, widget)
-            self._adv_widgets.extend([lbl, widget])
 
         def _add_adv_check(tip_key: str, checkbox: QCheckBox):
             checkbox.setToolTip(tr(tip_key))
             adv.addRow(checkbox)
-            self._adv_widgets.append(checkbox)
 
         self.chk_fp16 = QCheckBox(tr("inpaint_fp16"))
         self.chk_fp16.setChecked(True)
@@ -254,24 +310,109 @@ class InpaintPage(QWidget):
         _add_adv_row("inpaint_label_dilation",
                      "inpaint_tooltip_dilation", self.sb_dilation)
 
-        params_lay.addLayout(adv)
-        params_lay.addStretch(1)
+        params_lay.addWidget(self._adv_widget)
 
         # Wire & hide-by-default. Same pattern as the denoise tab.
         self.dev_mode.toggled.connect(self._apply_dev_mode)
         self._apply_dev_mode(False)
 
+        # Plain QGroupBox — same reason as params_box above.
+        fmt_box = QGroupBox(tr("io_section_format"))
+        fmt_box.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        fmt_outer = QVBoxLayout(fmt_box)
+        fmt_outer.setSpacing(6)
+
+        codec_form = QFormLayout()
+        codec_form.setLabelAlignment(Qt.AlignRight)
+        codec_form.setSizeConstraint(QFormLayout.SetMinAndMaxSize)
+        codec_form.setContentsMargins(0, 0, 0, 0)
+        self.format_combo = QComboBox()
+        self.format_combo.addItem(tr("io_format_auto"), "auto")
+        self.format_combo.addItem(tr("io_format_h264"), "h264")
+        self.format_combo.addItem(tr("io_format_prores"), "prores")
+        self.format_combo.setToolTip(tr("io_tooltip_format"))
+        self.format_combo.currentIndexChanged.connect(
+            lambda _: self._on_format_changed())
+        lbl_codec = QLabel(tr("io_label_codec"))
+        lbl_codec.setToolTip(tr("io_tooltip_format"))
+        codec_form.addRow(lbl_codec, self.format_combo)
+        fmt_outer.addLayout(codec_form)
+
+        # ProRes profile drawer — visible only when the resolved format
+        # is "prores" (whether via Auto on a prores source or explicit).
+        self.prores_drawer = QWidget()
+        prof_form = QFormLayout(self.prores_drawer)
+        prof_form.setContentsMargins(0, 0, 0, 0)
+        prof_form.setLabelAlignment(Qt.AlignRight)
+        prof_form.setSizeConstraint(QFormLayout.SetMinAndMaxSize)
+        self.prores_profile = QComboBox()
+        for k in _PRORES_KEYS:
+            self.prores_profile.addItem(_PRORES_LABELS[k], k)
+        idx = _PRORES_KEYS.index("4444")
+        self.prores_profile.setCurrentIndex(idx)
+        self.prores_profile.setToolTip(tr("io_tooltip_prores_profile"))
+        lbl_profile = QLabel(tr("io_label_prores_profile"))
+        lbl_profile.setToolTip(tr("io_tooltip_prores_profile"))
+        prof_form.addRow(lbl_profile, self.prores_profile)
+        fmt_outer.addWidget(self.prores_drawer)
+        self.prores_drawer.setVisible(False)
+
+        # Pack params + format into a single scrollable column, top-
+        # anchored. Without the trailing stretch the params card was
+        # absorbing all vertical space and pushing the format card to
+        # the bottom edge.
+        # Do NOT call setStyleSheet on inner / scroll. Any QSS on a
+        # parent forces every descendant — including QComboBox and
+        # QSpinBox — into QSS rendering mode, which makes the dropdown
+        # chrome look solid black instead of Fusion-native.
+        inner = QWidget()
+        inner_lay = QVBoxLayout(inner)
+        inner_lay.setContentsMargins(0, 0, 0, 0)
+        inner_lay.setSpacing(12)
+        inner_lay.addWidget(params_box)
+        inner_lay.addWidget(fmt_box)
+        inner_lay.addStretch(1)
+
         scroll = QScrollArea()
-        scroll.setWidget(params_box)
+        scroll.setWidget(inner)
         scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
         lay.addWidget(scroll, 1)
 
         return right
 
+    # ------------------------------------------------------------------
+    # Output format handling
+    # ------------------------------------------------------------------
+    def _resolved_format(self) -> str:
+        """Return the concrete codec ("h264" or "prores"). Resolves "auto"
+        via the source codec cached during _set_video."""
+        fmt = (self.format_combo.currentData()
+               if hasattr(self, "format_combo") else "auto")
+        if fmt == "auto":
+            return auto_format_from_codec(self.video_codec)
+        return fmt
+
+    def _on_format_changed(self):
+        """Reveal the ProRes profile drawer when needed and keep the
+        visible output-path extension in sync (mp4 ↔ mov)."""
+        fmt = self._resolved_format()
+        if hasattr(self, "prores_drawer"):
+            self.prores_drawer.setVisible(fmt == "prores")
+        cur = self.output_edit.text().strip()
+        if not cur:
+            return
+        new_ext = ".mov" if fmt == "prores" else ".mp4"
+        base, _ = os.path.splitext(cur)
+        new = base + new_ext
+        if new != cur:
+            self.output_edit.setText(new)
+
     def _apply_dev_mode(self, on: bool):
-        """Show/hide advanced rows. Model + max_batch stay visible regardless."""
-        for w in self._adv_widgets:
-            w.setVisible(on)
+        """Show/hide advanced rows. Model + max_batch stay visible regardless.
+        Toggling the wrapping QWidget collapses the dev-mode rows entirely
+        so the card hugs only its visible content (no reserved empty space)."""
+        self._adv_widget.setVisible(on)
 
     # ------------------------------------------------------------------
     # File / input handling
@@ -301,6 +442,14 @@ class InpaintPage(QWidget):
             return
 
         self.video_info = (h, w, fps, fc)
+        # Light codec probe so "Auto" format picks the right codec
+        # without re-encoding more than necessary in chained workflows.
+        self.video_codec = ""
+        try:
+            from fdcore.video_io import VideoInfo as _FdInfo
+            self.video_codec = (_FdInfo(path).codec_name or "").lower()
+        except Exception:
+            pass
         try:
             self.player.disable_compare()
         except Exception:
@@ -311,6 +460,10 @@ class InpaintPage(QWidget):
             f"<b>{os.path.basename(path)}</b> &nbsp; "
             f"{w}×{h} @ {fps:.2f}fps · {fc} frames")
         self.output_edit.setText(self._default_output_path(path))
+        # Refresh extension based on the freshly probed codec (Auto may
+        # now resolve to ProRes if source is ProRes).
+        if hasattr(self, "format_combo"):
+            self._on_format_changed()
         # Stale mask — new video may have different dimensions.
         self.current_mask = None
         self.mask_status.setText(tr("inpaint_no_mask"))
@@ -420,7 +573,7 @@ class InpaintPage(QWidget):
     # ------------------------------------------------------------------
     # Run / cancel
     # ------------------------------------------------------------------
-    def _run(self):
+    def _run(self, preview: bool = False):
         if not self.video_path:
             QMessageBox.information(self, "Inpaint", "비디오를 먼저 선택하세요.")
             return
@@ -436,18 +589,30 @@ class InpaintPage(QWidget):
                 "setup.bat을 다시 실행하거나, weights/ 폴더를 확인하세요.")
             return
 
-        out_path = self.output_edit.text().strip() or \
-            self._default_output_path(self.video_path)
-        if not out_path.lower().endswith(".mp4"):
-            out_path = os.path.splitext(out_path)[0] + ".mp4"
-        out_dir = os.path.dirname(out_path)
-        if out_dir and not os.path.isdir(out_dir):
-            try:
-                os.makedirs(out_dir, exist_ok=True)
-            except Exception as e:
-                QMessageBox.critical(self, "Inpaint",
-                                     f"출력 폴더 생성 실패:\n{e}")
-                return
+        # Preview goes to cache as h264 mp4 (fast, throwaway). Full
+        # run goes to the user-chosen output path in the user-chosen
+        # codec.
+        if preview:
+            os.makedirs(_CACHE_DIR, exist_ok=True)
+            out_path = os.path.join(_CACHE_DIR, _PREVIEW_CACHE_NAME)
+            fmt = "h264"
+            frame_cap = PREVIEW_FRAMES
+        else:
+            out_path = self.output_edit.text().strip() or \
+                self._default_output_path(self.video_path)
+            fmt = self._resolved_format()
+            expected_ext = ".mov" if fmt == "prores" else ".mp4"
+            if not out_path.lower().endswith(expected_ext):
+                out_path = os.path.splitext(out_path)[0] + expected_ext
+            out_dir = os.path.dirname(out_path)
+            if out_dir and not os.path.isdir(out_dir):
+                try:
+                    os.makedirs(out_dir, exist_ok=True)
+                except Exception as e:
+                    QMessageBox.critical(self, "Inpaint",
+                                         f"출력 폴더 생성 실패:\n{e}")
+                    return
+            frame_cap = -1
 
         settings = {
             "fp16":              self.chk_fp16.isChecked(),
@@ -457,16 +622,22 @@ class InpaintPage(QWidget):
             "raft_iter":         self.sb_raft.value(),
             "mask_dilation":     self.sb_dilation.value(),
             "max_batch_frames":  self.sb_batch_frames.value(),
+            "output_format":     fmt,
+            "prores_profile":    (self.prores_profile.currentData()
+                                  or "4444"),
         }
         device = get_device()
-        self._log(f"처리 시작 → {out_path}")
+        kind = f"미리보기 (앞 {PREVIEW_FRAMES}프레임)" if preview else "처리 시작"
+        self._log(f"{kind} → {out_path}")
         self._log(f"  device={device}, fp16={settings['fp16']}, "
                   f"neighbor={settings['neighbor_length']}, "
                   f"ref_stride={settings['ref_stride']}, "
                   f"subvideo={settings['subvideo_length']}")
 
+        self._is_preview = preview
         self.worker = InpaintWorker(
-            self.video_path, self.current_mask, settings, out_path, device)
+            self.video_path, self.current_mask, settings, out_path, device,
+            frame_cap=frame_cap)
         self.worker.progress.connect(self._on_progress)
         self.worker.finished_signal.connect(self._on_finished)
         self.worker.error_signal.connect(self._on_error)
@@ -489,8 +660,41 @@ class InpaintPage(QWidget):
 
     def _set_running(self, running: bool):
         self.btn_run.setEnabled(not running)
+        self.btn_preview.setEnabled(not running)
         self.btn_cancel.setEnabled(running)
         self.preset_btn.setEnabled(not running)
+        self.btn_edit_mask.setEnabled(not running)
+
+    # ------------------------------------------------------------------
+    # Manual brush mask editor
+    # ------------------------------------------------------------------
+    def _open_mask_editor(self):
+        if not self.video_path:
+            QMessageBox.information(self, "Inpaint",
+                                     "비디오를 먼저 선택하세요.")
+            return
+        try:
+            dlg = MaskEditorDialog(
+                self.video_path, self.current_mask, parent=self)
+        except Exception as e:
+            QMessageBox.critical(self, "Inpaint",
+                                  f"마스크 편집기 열기 실패:\n{e}")
+            return
+        if dlg.exec_() != QDialog.Accepted:
+            return
+        new_mask = dlg.get_mask()
+        if new_mask is None or not np.any(new_mask > 0):
+            QMessageBox.information(
+                self, "Inpaint",
+                "그려진 영역이 없습니다. 마스크가 변경되지 않았습니다.")
+            return
+        self.current_mask = new_mask
+        coverage = float((new_mask > 127).mean()) * 100.0
+        self.mask_status.setText(
+            f"{tr('inpaint_mask_set')} — 브러시 편집 · {coverage:.1f}%")
+        self._update_mask_thumb(new_mask)
+        self._log(f"브러시 마스크 적용 ({new_mask.shape[1]}×{new_mask.shape[0]}, "
+                  f"커버리지 {coverage:.1f}%)")
 
     # ------------------------------------------------------------------
     # Worker signal handlers
@@ -525,18 +729,52 @@ class InpaintPage(QWidget):
         self.eta_label.setText(tr("finished_summary").format(
             done=self._last_done, total=self._last_total, elapsed=elapsed))
         self._log(f"완료 ({elapsed:.1f}s) → {output_path}")
+        was_preview = self._is_preview
+        self._is_preview = False
         self.worker = None
         if output_path and os.path.exists(output_path):
             try:
+                if was_preview:
+                    # Preview output is already in cache/; load it
+                    # directly so we don't re-copy and possibly overwrite
+                    # an existing full-run viewer stage.
+                    viewer_path = output_path
+                else:
+                    # Full run — stage a viewer-only copy in cache/ so
+                    # the real deliverable in output/ stays writable
+                    # while the player keeps its cv2 handle.
+                    viewer_path = self._stage_for_viewer(output_path)
                 self.player.disable_compare()
-                self.player.load(output_path)
+                self.player.load(viewer_path)
                 if self.video_path and os.path.exists(self.video_path):
                     self.player.enable_compare(self.video_path)
             except Exception as e:
                 self._log(f"[WARN] 결과 미리보기 전환 실패: {e}")
 
+    @staticmethod
+    def _stage_for_viewer(output_path: str) -> str:
+        """Copy the deliverable into cache/inpaint_view.<ext> so the
+        in-app player can hold a cv2 handle without locking output/.
+        Extension follows the deliverable (.mp4 for h264, .mov for prores)."""
+        try:
+            os.makedirs(_CACHE_DIR, exist_ok=True)
+            ext = os.path.splitext(output_path)[1].lower() or ".mp4"
+            if ext not in (".mp4", ".mov"):
+                ext = ".mp4"
+            base = os.path.splitext(_VIEWER_CACHE_NAME)[0]
+            dst = os.path.join(_CACHE_DIR, f"{base}{ext}")
+            if os.path.exists(dst):
+                os.remove(dst)
+            shutil.copy2(output_path, dst)
+            return dst
+        except Exception:
+            # Viewer-locking the real output is better than losing the
+            # ability to show the result at all.
+            return output_path
+
     def _on_cancelled(self):
         self._set_running(False)
+        self._is_preview = False
         elapsed = time.time() - self._t_start
         pal = QPalette(self.progress.palette())
         pal.setColor(QPalette.Highlight, QColor("#e57373"))
@@ -549,6 +787,7 @@ class InpaintPage(QWidget):
 
     def _on_error(self, msg: str):
         self._set_running(False)
+        self._is_preview = False
         self._log(f"[ERROR] {msg}")
         self.worker = None
         QMessageBox.critical(self, "Inpaint", msg)

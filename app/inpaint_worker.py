@@ -57,13 +57,18 @@ class InpaintWorker(QThread):
     phase_changed = pyqtSignal(str)
 
     def __init__(self, video_path, mask_full, settings, output_path, device,
-                 parent=None):
+                 frame_cap=-1, parent=None):
         super().__init__(parent)
         self.video_path = video_path
         self.mask_full = mask_full       # uint8 H x W, full-frame
         self.settings = settings or {}
         self.output_path = output_path
         self.device = device
+        # >0 caps the number of frames read & processed. Used by the
+        # Preview button to inpaint just the first ~80 frames so the
+        # user can iterate on parameters without paying for the full
+        # clip every time.
+        self.frame_cap = int(frame_cap) if frame_cap else -1
         self._cancelled = False
 
     def cancel(self):
@@ -74,6 +79,8 @@ class InpaintWorker(QThread):
         try:
             info = VideoInfo(self.video_path)
             total_frames = info.frame_count
+            if self.frame_cap > 0:
+                total_frames = min(total_frames, self.frame_cap)
 
             mask_binary = mask_to_binary(self.mask_full)
             if mask_binary.shape[:2] != (info.height, info.width):
@@ -99,12 +106,16 @@ class InpaintWorker(QThread):
             # effective_fps: 24.04-style noisy source → snapped to nearest
             # standard (24.000). color_tags: forwarded so untagged sources
             # stay untagged on output (matches Nuke heuristic on both files).
+            # output_format: "h264" (mp4) or "prores" (mov); resolved by the
+            # page before the worker starts.
             writer = FFmpegWriter(
                 self.output_path,
                 info.effective_fps,
                 info.width, info.height,
                 source_path=self.video_path,
-                color_tags=info.color_tags())
+                color_tags=info.color_tags(),
+                output_format=self.settings.get("output_format", "h264"),
+                prores_profile=self.settings.get("prores_profile", "4444"))
 
             engine = InpaintEngine(
                 self.device, fp16=bool(self.settings.get("fp16", True)))

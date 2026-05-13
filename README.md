@@ -1,161 +1,195 @@
-# FlowDenoise (Standalone)
+# CEC All-In-One
 
-ComfyUI 없이 동작하는 광학 흐름 기반 시간적 비디오 디노이저. PyQt5 데스크톱 앱.
+AI 영상 후처리 통합 데스크톱 도구. PyQt5 기반. 인페인트 / 디노이즈 / 업스케일을
+한 앱에서 처리하고 모든 탭이 동일한 영상 IO 정책(untagged 통과, 비정수 fps 스냅,
+시청자 캐시 격리)을 공유합니다.
 
-원본 ComfyUI 커스텀 노드 [`ComfyUI-FlowDenoise`](https://github.com/AIMZ-GFX/ComfyUI-FlowDenoise)
-의 알고리즘(MEMFOF / RAFT optical flow + 시간적 가중평균)을 독립 실행형
-GUI 앱으로 재구성한 것입니다.
+세 가지 독립된 도구를 묶어 만든 버전:
+- **인페인트** — ProPainter 기반 워터마크 / 객체 제거
+- **디노이즈** — MEMFOF + RAFT 광학흐름 기반 시간적 가중평균 디노이저
+  (FlowDenoise v1.0.0 그대로 통합)
+- **업스케일** — Sirosky OpenProteus(SRVGGNetCompact 2x) 기반 슈퍼-레졸루션
 
 ## 설치 (Windows)
 
-1. 이 저장소를 압축 해제
+1. 저장소를 압축 해제
 2. `setup.bat` 실행 — 자동으로:
    - Python 3.12 임베디드 다운로드
-   - GPU 감지 후 적합한 PyTorch 인덱스(cu118 / cu124 / cu128 / cpu) 설치
-   - `requirements.txt` 의존성 설치
-   - MEMFOF 패키지 + 가중치 사전 다운로드
-3. `run.bat` 실행
+   - GPU 감지 후 적합한 PyTorch 인덱스(`cu118` / `cu124` / `cu128` / `cpu`) 설치
+   - `requirements.txt` 의존성 설치 (PyQt5, opencv, scipy, einops, timm,
+     spandrel, huggingface_hub, imageio-ffmpeg 등)
+   - **MEMFOF** 패키지 + HuggingFace 가중치 사전 다운로드 (디노이즈용)
+   - **ProPainter** 소스 zip 다운로드 + 가중치 3개 (~580MB, 인페인트용)
+   - **OpenProteus** SR 가중치 (~2.4MB, 업스케일용)
+   - Pretendard 폰트 (OFL)
+3. `run.bat` 실행 — 최소화된 cmd로 띄우고 로그는 `logs/cec_aio.log`에 tee
 
-> 기존 시스템 Python과 격리되어 동작하므로 다른 Python 환경에 영향을 주지 않습니다.
+> 기존 시스템 Python과 완전 격리. 디스크는 처음 셋업 시 ~3GB 차지 (Python + 모델
+> 가중치 + 의존성).
 
-## 사용법
+## 탭 구성
 
-1. 비디오 파일을 메인 윈도우에 드래그 앤 드롭 또는 [파일 선택]
-2. 우측 패널에서 출력 포맷 선택 (기본 H.264 MP4), batch_size 조정
-3. **미리보기 (앞 80프레임)** — 좌우 wipe 비교 (cv2 기반 in-app 플레이어).
-   미리보기는 포맷 무관하게 항상 H.264 mp4로 캐시됩니다 (cv2 호환성).
-4. **전체 처리** — 진행률 + ETA. 완료 시 `<원본>_denoised.<ext>` 생성 (오디오 보존)
+상단 헤더: **인페인트 / 디노이즈 / 업스케일 / About** (기본 = 인페인트).
+탭 전환해도 우측 하단 챗봇 버블은 항상 떠 있습니다.
 
-## 출력 포맷
+### 1. 인페인트 (ProPainter)
 
-| 포맷 | 용도 | 컨테이너 / 코덱 | 비고 |
-|---|---|---|---|
-| H.264 MP4 (기본) | 일반 배포, 빠른 디코드 | `libx264` 8-bit yuv420p, AAC 오디오 | 작은 파일, 어디서나 재생 |
-| ProRes MOV | NLE / Nuke deliverable | `prores_ks` 10-bit (yuv422p10le / yuv444p10le) | 색감 보존, 파일 큼 |
-| PNG sequence | 비디오 무관 보관 | 폴더 + numbered PNG + meta.json | 코덱 손실 0 |
+워터마크나 작은 객체 제거. 마스크 영역만 잘라서 모델에 통과시키고 결과를
+원본에 다시 덮어쓰는 방식 → 마스크 바깥 픽셀 손실 0.
 
-ProRes 프로파일: `proxy / lt / standard / hq / 4444 / 4444xq` (ProRes 선택 시 노출).
+- **마스크 입력 2가지**
+  - **프리셋 ▼ → Dreamina (자동)**: 영상 가로/세로 비율 자동 감지 →
+    적합한 마스크 PNG 자동 적용 + anchor(top-left) 정렬
+  - **마스크 편집**: 모달 다이얼로그로 첫 프레임 위에 직접 그리기 — 브러시 /
+    사각형 / 원형 / 지우개 + 크기 슬라이더 + 실행취소(Ctrl+Z) + `[`/`]` 크기 ±
+- **미리보기 (앞 80프레임)** — 짧게 미리 확인 (캐시에 h264로 출력)
+- **전체 처리** — 사용자 지정 출력 경로 + 코덱
+- 파라미터 (기본 모드): 모델 (ProPainter) · Max batch frames (VRAM 분할용)
+- 파라미터 (Dev 모드): FP16, feather, neighbor / ref_stride / subvideo /
+  raft_iter / mask_dilation
 
-## 색관리 — 소스 태그 상태 그대로 통과
+### 2. 디노이즈 (FlowDenoise)
+
+AI 영상 / 라이브액션의 시간적 노이즈 제거. window_size 만큼 이웃 프레임을
+참조해 광학흐름으로 정렬한 뒤 가중평균. 가만히 있는 디테일은 보존되고
+지글거리는 노이즈만 빠짐.
+
+상세는 [`FlowDenoise` 별도 저장소](https://github.com/khwhite0413/FlowDenoise)
+README와 동일.
+
+### 3. 업스케일 (OpenProteus)
+
+HD/FHD 라이브액션 → 4K (또는 그 이상). 오버샤프닝/링잉 없음.
+
+- 모델은 항상 입력의 **2x로 추론** → cv2가 마지막에 사용자 지정 타겟 해상도로
+  Lanczos4(키울 때) / Area(줄일 때) 리사이즈
+- 출력 해상도 선택: Native (원본×2) / HD / FHD / QHD / 4K / 8K
+- 예상 해상도 + 비율 자동 표시 (`예상: 3840×2160 · 16:9`)
+
+### 4. About
+
+좌측 명함(제품명 + v0.1.0 + 연락처). 우측 FAQ는 **인페인트 / 디노이즈 / 업스케일**
+3개 서브탭으로 나뉘어 각 도구에 특화된 자주 묻는 질문 + 기술적 디테일
+(예: 업스케일의 Lanczos4/Area 알고리즘 선택, cv2 리사이즈 단계가 "다운스케일"로
+표시되는 이유 등) 정리.
+
+## 출력 포맷 (모든 처리 탭 공통)
+
+매 탭 우측 패널 하단 **출력 포맷** 카드:
+
+| 옵션 | 동작 |
+|---|---|
+| **Auto (소스 따라감)** | ProRes 소스 → ProRes 출력, 그 외 → H.264. 다단계 워크플로우(인페인트 → 디노이즈 → 업스케일)에서 매번 h264 재압축으로 인한 손실 방지 |
+| **H.264 MP4** | libx264 + yuv420p + AAC. 작은 파일, 빠른 디코드 |
+| **ProRes MOV** | prores_ks + yuv422p10le(422 계열) 또는 yuv444p10le(4444). 후작업 / 합성용. 서랍에서 프로파일 선택: Proxy / LT / 422 / 422 HQ / **4444 (기본)** / 4444 XQ |
+
+> 디노이즈 탭에는 추가로 **PNG sequence** 옵션 + ProRes 프로파일 카드가 있습니다
+> (FlowDenoise 고유 파라미터 패널 그대로 유지).
+
+## 색관리 — 모든 탭에서 동일
 
 mp4/mov는 컨테이너 atom (`colr`/`nclc`)과 H.264 VUI에 컬러 메타
 (primaries / transfer / matrix / range)를 박을 수 있는데, **있을 수도 있고
-없을 수도 있다**는 점이 핵심입니다. 다운스트림은 두 경우를 다르게 해석합니다 —
-Nuke mov64 reader는 태그가 없으면 Rec.601 휴리스틱으로, 일부 플레이어는
-Rec.709로 풀어버립니다.
-
-가장 흔한 사고: **소스는 untagged인데 출력은 bt709로 태그가 박혀 나가는
-경우**. Nuke가 소스에는 Rec.601 inverse, 출력에는 bt709 inverse를 적용해
-미드톤이 어긋나고, "디노이즈가 색을 바꿔놨다"는 오해로 직결됩니다.
+없을 수도 있다**가 핵심입니다. Nuke mov64 reader는 태그가 없으면 Rec.601
+휴리스틱으로 풀고, 일부 플레이어는 Rec.709로 풉니다.
 
 ### Seedance 2.0 같은 untagged 소스
 
-Seedance 2.0이 뽑는 mp4에는 nclc atom이 없습니다. FlowDenoise는 ffprobe로
-소스의 태그 유무를 먼저 확인합니다:
+ffprobe로 소스 태그 유무를 먼저 확인:
 
-- **태그가 있으면**: primaries/transfer/matrix/range를 그대로 복사
-  (`-movflags +write_colr`로 컨테이너 atom + VUI 둘 다 작성).
-- **태그가 없으면**: 출력도 **untagged 유지** — 기본값을 강제하지 않음.
-  소스와 출력에 동일한 휴리스틱이 적용되니 어긋날 여지가 없음.
+- **태그 있음** → primaries/transfer/matrix/range를 그대로 출력에도 박음
+  (`-movflags +write_colr`로 컨테이너 atom + VUI 둘 다 작성)
+- **태그 없음** → 출력도 **untagged 유지** — 기본값 강제 안 함. 소스와 출력에
+  동일한 휴리스틱이 적용되니 어긋날 여지가 없음
 
-### 그 외
+세 탭(인페인트/디노이즈/업스케일) 모두 동일한 `fdcore.VideoInfo` 통과 →
+동일한 untagged 정책.
 
-- **디코드**: `FFmpegReader`(ffmpeg subprocess) — Nuke 내부 ffmpeg와 동일
-  사슬이라 RGB 표현이 일치.
-- **TPDF dither**: 8-bit h264 출력 직전 ±1 LSB triangular dither.
-  bgr48le 16-bit 파이프라인을 8-bit로 양자화할 때 어두운 영역 banding 방지.
-  ProRes(10-bit) / PNG에는 미적용.
-- **양자화 라운딩**: `np.rint`(round-half-to-even)로 u8→float→u8 비트정확.
-- **ProRes**: Range tv 고정 + 소스 nclc 보존 (NLE 컨벤션).
+## 비정수 fps 자동 스냅
 
-## 파라미터
+Seedance 같은 AI 영상 생성기는 24.04, 24.06 같은 어중간한 fps로 영상을 뽑는
+버릇이 있습니다. NLE 타임라인에 그대로 올리면 시간이 갈수록 한두 프레임씩
+밀립니다. 모든 탭이 `_snap_fps()`로 가장 가까운 표준값(23.976 / 24 / 25 /
+29.97 / 30 / 50 / 59.94 / 60, ±0.1 tolerance)으로 자동 보정 후 인코딩.
 
-기본값은 단순화된 패널에서 batch_size만 노출되고, **Dev mode** 체크박스를 켜면
-전체 파라미터가 노출됩니다.
+## 도우미 챗봇
 
-### Temporal Flow Average
+우측 하단에 떠 있는 💬 버블 클릭 → 380×520 채팅 패널이 위로 펼쳐짐.
 
-| 파라미터 | 기본값 | 설명 |
-|---|---|---|
-| window_size | 3 | 좌우 평균할 이웃 프레임 수 |
-| weight_decay | 0.80 | 시간 거리에 따른 지수 감쇠 |
-| flow_model | memfof | memfof / raft_small / raft_large |
-| flow_iterations | 4 | 흐름 정밀화 반복 |
-| color_threshold | 0.020 | 색 유사도 임계값 (낮을수록 엄격) |
-| scene_threshold | 0.030 | 씬 컷 검출 임계값 |
-| batch_size | 24 | MEMFOF 배치. 1080p RTX 5080 16GB ≈ 16, RTX 5090 32GB ≈ 32 |
-| precision | bf16 | bf16 / fp32 |
-| flow_scale | 0.5 | flow 추정 입력 다운샘플 비율 (warp는 항상 풀 해상도) |
-| clamp_output | true | 출력을 [0,1] 범위로 클램프 |
+- **NIM 무료 LLM** (`meta/llama-4-maverick-17b-128e-instruct`)을 사용자
+  소유 Cloudflare Workers 프록시를 통해 호출 (API 키 노출 없음)
+- 시스템 프롬프트에 CEC All-In-One 매뉴얼 + FAQ 박혀있어서 "인페인트 어떻게 써?"
+  류 질문에 정확히 답함
+- 일반 질문(번역, 영상 후작업 팁 등)도 자유롭게 가능
+- 한/영 자동 인식 (사용자 언어로 응답)
+- Enter 전송 · Shift+Enter 줄바꿈
 
-### 출력
+## 캐시 / 출력 격리
 
-| 파라미터 | 기본값 | 설명 |
-|---|---|---|
-| output_format | h264 | h264 / prores / image_seq |
-| prores_profile | 4444 | proxy / lt / standard / hq / 4444 / 4444xq |
+cv2가 영상 파일에 핸들을 잡으면 Windows에서 원본을 잠금합니다 (이동/리네임 불가).
+모든 탭이 처리 직후 결과물을 `cache/<tab>_view.<ext>` (또는 미리보기는
+`cache/<tab>_preview.mp4`)로 별도 복사 → 그쪽을 player에 로드 →
+`output/`의 진짜 deliverable은 자유롭게 만질 수 있게 유지.
 
-### 노이즈 미리보기 (선택)
-
-체크박스를 켜면 처리 후 노이즈 시각화 영상을 우측 미니뷰어에 표시.
-
-| 파라미터 | 기본값 | 설명 |
-|---|---|---|
-| compute_noise_preview | false | 노이즈 시각화 생성 여부 |
-| noise_preview | heatmap | heatmap / signed / gray |
-| noise_amplify | 5.0 | 시각화 증폭 |
-
-### Dev mode 전용
-
-| 파라미터 | 기본값 | 설명 |
-|---|---|---|
-| passthrough | false | 디노이즈 완전 우회. read → write만. ffmpeg 인코드/디코드 사슬 자체의 색 보존을 검증할 때 사용 |
+캐시 파일은 앱 종료 시 + 다음 시작 시 자동 sweep (전 세션이 crash해서
+OS 락이 안 풀린 케이스 대비 양쪽).
 
 ## 아키텍처
 
 ```
-main.py                 - torch 선임포트 → QApplication
-app/                    - PyQt5 UI 레이어
-  main_window.py        - 메인 윈도우 + 드래그앤드롭 + preview h264 강제
-  parameter_panel.py    - 단순 / Dev mode 토글 파라미터 폼
-  preview_dialog.py     - 원본/디노이즈 좌우 wipe 비교
-  video_player.py       - cv2 기반 in-app 비디오 플레이어
-  workers.py            - QThread (DenoiseWorker, PreviewWorker)
-  presets.py            - 프리셋 사전
-  i18n.py               - 한/영 토글
-fdcore/                 - UI 무지각 코어
-  color_spaces.py       - RGB↔YCbCr/HSV/LAB (노이즈 시각화에서만 사용)
-  flow_warp.py          - warp / consistency mask
-  flow_models.py        - MEMFOF / RAFT lazy 로더
-  temporal_average.py   - 시간적 가중평균 (memfof / raft 분기)
-  extract_noise.py      - 노이즈 분리 + 시각화 (옵션)
-  pipeline.py           - settings dict 기반 통합 파이프라인 + passthrough 분기
-  video_io.py           - FFmpegReader / FFmpegWriter / ImageSequenceWriter +
-                          nclc/VUI 컬러 태그 패스스루 + TPDF dither
-  progress.py           - 진행률 콜백 + 취소 지원
-tests/                  - unittest 기반 색 라운드트립 / dither / 태그 보존 검증
-third_party/memfof/     - (선택) MEMFOF 저장소 vendoring
-weights/memfof/         - HuggingFace 모델 캐시
-python/                 - 임베디드 Python (setup이 채움)
+main.py                       - 로깅 셋업 → torch 선임포트 → QApplication
+app/
+  main_window.py              - 4탭 셸 + 챗봇 오버레이 부착 + 드래그앤드롭 라우팅
+  inpaint_page.py             - 인페인트 탭 UI (프리셋 + 마스크 편집 + ProPainter 파라미터)
+  inpaint_worker.py           - QThread 래퍼 (vdcore.InpaintEngine 호출)
+  mask_editor_dialog.py       - 브러시/사각형/원형/지우개 마스크 편집 다이얼로그
+  parameter_panel.py          - 디노이즈 파라미터 폼 (FD 그대로)
+  workers.py                  - DenoiseWorker / PreviewWorker (FD 그대로)
+  upscale_page.py             - 업스케일 탭 UI (OpenProteus + 해상도 선택)
+  upscale_worker.py           - QThread 래퍼 (spandrel 모델 로더)
+  about_page.py               - About 카드 + 3탭 서브 FAQ (인페인트/디노이즈/업스케일)
+  chatbot_panel.py            - 플로팅 챗봇 (NIM via Cloudflare 프록시)
+  preview_dialog.py           - 디노이즈 좌우 wipe 미리보기 (FD 그대로)
+  video_player.py             - cv2 기반 in-app 비디오 플레이어
+  i18n.py                     - 한/영 번역 사전
+fdcore/                       - 디노이즈 코어 (FlowDenoise v1.0.0 그대로)
+  pipeline.py / temporal_average.py / flow_models.py / flow_warp.py /
+  video_io.py / color_spaces.py / extract_noise.py / progress.py
+vdcore/                       - 인페인트 코어 (VDInpaint 발췌)
+  inpaint_engine.py           - ProPainter 추론 래퍼
+  video_io.py                 - 인페인트/업스케일용 FFmpegWriter (h264/prores)
+  mask_manager.py / model_downloader.py / watermark_detect.py / config.py
+third_party/
+  memfof/                     - (선택) MEMFOF 저장소 vendoring — 디노이즈
+  ProPainter/                 - ProPainter 저장소 zip 다운로드 — 인페인트
+presets/                      - Dreamina 마스크 PNG (가로 / 세로)
+assets/{fonts,logo}/          - Pretendard OTF + AIMZ 로고
+weights/                      - 모델 가중치 (setup.bat이 채움)
+  memfof/                     - HuggingFace 캐시 (디노이즈)
+  ProPainter.pth + raft-things.pth + recurrent_flow_completion.pth (인페인트)
+  openproteus/2x_OpenProteus_Compact_i2_70K.pth (업스케일)
+python/                       - 임베디드 Python (setup이 채움)
+cache/ / logs/ / output/      - 런타임 (sweep 대상)
 ```
-
-> 이전 버전에 있던 `selective_denoise.py`는 제거되었습니다. 시간적 가중평균
-> 결과가 곧 디노이즈 출력입니다 (chroma/luma 분리 lerp 단계 없음).
 
 ## 테스트
 
+디노이즈 코어 단위테스트만 포함:
+
 ```
-python -m unittest tests.test_video_io
+python -m unittest discover -s tests
 ```
 
-검증 항목:
-- u8 → tensor → u8 라운드트립이 비트정확 (`np.rint` 보장)
-- TPDF dither 평균 보존 + ±1 LSB 진폭
-- 어두운 ramp에서 dither 적용 시 양자화 코드 다양성 증가 (밴딩 방지)
+- u8 → tensor → u8 라운드트립 비트정확
+- TPDF dither 평균 보존 + 양자화 코드 다양성 증가
 - ProRes / h264 인코더 명령에 소스 nclc / VUI 태그가 forward 됨
+- 오디오 stream-copy 명령이 `-c:a copy` 사용
 
 ## 라이선스
 
-본 앱: MIT (`LICENSE` 참고).
-MEMFOF 모델 라이선스: [HuggingFace 페이지](https://huggingface.co/egorchistov/optical-flow-MEMFOF-Tartan-T-TSKH) 확인 필수.
-원본 ComfyUI 노드: [AIMZ-GFX/ComfyUI-FlowDenoise](https://github.com/AIMZ-GFX/ComfyUI-FlowDenoise) MIT.
+- 본 앱: MIT (`LICENSE` 참고)
+- **MEMFOF**: [HuggingFace 페이지](https://huggingface.co/egorchistov/optical-flow-MEMFOF-Tartan-T-TSKH) 확인
+- **ProPainter**: [원본 저장소](https://github.com/sczhou/ProPainter) NTU S-Lab License
+- **OpenProteus**: [Sirosky/Upscale-Hub](https://github.com/Sirosky/Upscale-Hub/releases/tag/OpenProteus) — Sirosky 본인이 학습한 모델
+- 원본 ComfyUI 디노이즈 노드: [AIMZ-GFX/ComfyUI-FlowDenoise](https://github.com/AIMZ-GFX/ComfyUI-FlowDenoise) MIT
+- Pretendard 폰트: SIL Open Font License 1.1

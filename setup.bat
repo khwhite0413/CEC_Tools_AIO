@@ -18,9 +18,9 @@ set "PATH=%PYTHON_DIR%;%PYTHON_DIR%\Scripts;%PATH%"
 
 REM === Step 1: Python embeddable ===
 if exist "%PYTHON%" (
-    echo [1/8] Python embedded - already installed
+    echo [1/9] Python embedded - already installed
 ) else (
-    echo [1/8] Downloading Python 3.12 embedded...
+    echo [1/9] Downloading Python 3.12 embedded...
     mkdir "%PYTHON_DIR%" 2>nul
     curl -sL -o "%ROOT%python-embed.zip" "https://www.python.org/ftp/python/3.12.8/python-3.12.8-embed-amd64.zip"
     if errorlevel 1 (
@@ -44,7 +44,7 @@ if exist "%PYTHON%" (
 )
 
 REM === Step 2: Detect GPU and install PyTorch ===
-echo [2/8] Detecting GPU...
+echo [2/9] Detecting GPU...
 
 "%PYTHON%" -c "import torch" >nul 2>&1
 if not errorlevel 1 (
@@ -89,7 +89,7 @@ if errorlevel 1 (
 
 :step3
 REM === Step 3: Python dependencies ===
-echo [3/8] Installing dependencies...
+echo [3/9] Installing dependencies...
 "%PYTHON%" -m pip install --no-warn-script-location -q -r "%ROOT%requirements.txt"
 if errorlevel 1 (
     echo    ERROR: pip install failed
@@ -98,7 +98,7 @@ if errorlevel 1 (
 echo    Done
 
 REM === Step 4: MEMFOF (vendored or git) ===
-echo [4/8] Installing MEMFOF...
+echo [4/9] Installing MEMFOF...
 "%PYTHON%" -c "import memfof" >nul 2>&1
 if not errorlevel 1 (
     echo    MEMFOF already installed
@@ -126,7 +126,7 @@ if errorlevel 1 (
 
 :step5
 REM === Step 5: Pre-fetch MEMFOF weights ===
-echo [5/8] Fetching MEMFOF weights ^(first run only^)...
+echo [5/9] Fetching MEMFOF weights ^(first run only^)...
 set "HF_HOME=%ROOT%weights\memfof"
 "%PYTHON%" -c "import os; os.environ['HF_HOME']=r'%ROOT%weights\memfof'; from memfof import MEMFOF; m=MEMFOF.from_pretrained('egorchistov/optical-flow-MEMFOF-Tartan-T-TSKH'); print('    weights OK')"
 if errorlevel 1 (
@@ -134,7 +134,7 @@ if errorlevel 1 (
 )
 
 REM === Step 6: ProPainter source (vendored) ===
-echo [6/8] Verifying ProPainter source...
+echo [6/9] Verifying ProPainter source...
 if exist "%ROOT%third_party\ProPainter\model\propainter.py" (
     echo    ProPainter source OK
     goto :step7
@@ -171,14 +171,36 @@ echo    ProPainter source OK
 
 :step7
 REM === Step 7: ProPainter weights ===
-echo [7/8] Fetching ProPainter weights ^(~580MB, first run only^)...
+echo [7/9] Fetching ProPainter weights ^(~580MB, first run only^)...
 "%PYTHON%" -c "from vdcore.model_downloader import download_all_weights; download_all_weights(progress_callback=print)"
 if errorlevel 1 (
     echo    WARNING: ProPainter weights download failed - retry from the Inpaint tab
 )
 
-REM === Step 8: Pretendard fonts (bundled at runtime, OFL) ===
-echo [8/8] Fetching Pretendard fonts...
+REM === Step 8: OpenProteus upscale weight ===
+echo [8/9] Fetching OpenProteus upscale weight ^(~2.4MB^)...
+set "UPS_DIR=%ROOT%weights\openproteus"
+mkdir "%UPS_DIR%" 2>nul
+set "UPS_FILE=%UPS_DIR%\2x_OpenProteus_Compact_i2_70K.pth"
+if exist "%UPS_FILE%" (
+    echo    OpenProteus weight already present
+) else (
+    curl -sL -o "%UPS_FILE%" "https://github.com/Sirosky/Upscale-Hub/releases/download/OpenProteus/2x_OpenProteus_Compact_i2_70K.pth"
+    if errorlevel 1 (
+        echo    WARNING: OpenProteus download failed - retry from the Upscale tab
+    ) else (
+        for %%A in ("%UPS_FILE%") do set "USIZE=%%~zA"
+        if !USIZE! LSS 1000000 (
+            echo    WARNING: OpenProteus file too small ^(!USIZE! bytes^), removing
+            del /f /q "%UPS_FILE%"
+        ) else (
+            echo    OpenProteus weight OK
+        )
+    )
+)
+
+REM === Step 9: Pretendard fonts (bundled at runtime, OFL) ===
+echo [9/9] Fetching Pretendard fonts...
 set "FONT_DIR=%ROOT%assets\fonts"
 mkdir "%FONT_DIR%" 2>nul
 set "FONT_BASE=https://cdn.jsdelivr.net/gh/orioncactus/pretendard@latest/packages/pretendard/dist/public/static"

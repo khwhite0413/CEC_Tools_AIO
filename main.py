@@ -173,7 +173,7 @@ def main():
     _apply_dark_palette(app)
 
     # App icon (taskbar / window decoration / Alt-Tab)
-    icon_path = os.path.join(ROOT, "assets", "logo", "aimz_icon.png")
+    icon_path = os.path.join(ROOT, "assets", "logo", "aimz_icon_v02.png")
     if os.path.exists(icon_path):
         app.setWindowIcon(QIcon(icon_path))
 

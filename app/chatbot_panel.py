@@ -36,7 +36,7 @@ SYSTEM_PROMPT = """\
 - 모르는 건 솔직히 모른다고 답하세요.
 - 답변은 간결하게. 필요한 경우 마크다운(굵게/리스트)을 사용해도 됩니다.
 
-# CEC All-In-One v1.0.0 개요
+# CEC All-In-One v1.0.1 개요
 AI 영상 후처리 통합 데스크톱 도구 (PyQt5 기반). 네 가지 작업 탭 + About:
 1. 인페인트 (Inpaint) — ProPainter로 워터마크/객체 제거
 2. 디노이즈 (Denoise) — FlowDenoise로 시간적 광학흐름 기반 노이즈 감소
@@ -238,7 +238,7 @@ class ChatWorker(QThread):
                     "Referer":
                         "https://khwhite0413.github.io/idol-prompt-builder/",
                     "User-Agent":
-                        "CEC-AllInOne/1.0.0 (+khwhite0413)",
+                        "CEC-AllInOne/1.0.1 (+khwhite0413)",
                 },
                 method="POST",
             )

@@ -29,15 +29,79 @@ def extract_frame(path, index):
 
 
 def read_frames_batch(path, start, count):
-    cap = cv2.VideoCapture(path)
-    cap.set(cv2.CAP_PROP_POS_FRAMES, start)
+    """Read [start, start+count) frames as BGR uint8 numpy arrays.
+
+    Backed by an ffmpeg subprocess that pipes rawvideo bgr24 to stdout.
+    Previously cv2.VideoCapture, which used its own YUV->RGB swscale
+    defaults independent of ffmpeg's. That asymmetry caused colour drift
+    on chained workflows with untagged sources: Denoise wrote via ffmpeg
+    (one default), Upscale then read via cv2 (another default) and wrote
+    via ffmpeg again — net mismatch baked into the pixels of the final
+    file. Routing reads through ffmpeg here keeps the matrix-decision
+    chain end-to-end uniform across the four tabs.
+
+    Function signature, return shape, and dtype match the old cv2 path
+    exactly so worker code (inpaint / upscale / batch orchestrator) is
+    unchanged.
+    """
+    if count <= 0:
+        return []
+    try:
+        info = VideoInfo(path)
+    except Exception:
+        return []
+    width, height, fps = info.width, info.height, info.fps
+    if width <= 0 or height <= 0:
+        return []
+
+    # Pre-input -ss with -accurate_seek (default on modern ffmpeg) gives
+    # us frame-accurate seek + the speed of a keyframe jump on long
+    # clips. Time is computed at the source's native fps so the index
+    # maps to the same physical frame the old cv2 path landed on.
+    seek_time = (start / fps) if fps and fps > 0 else 0.0
+
+    ffmpeg = _get_ffmpeg()
+    cmd = [
+        ffmpeg, "-loglevel", "error",
+        "-accurate_seek",
+        "-ss", f"{seek_time:.6f}",
+        "-i", path,
+        "-frames:v", str(int(count)),
+        "-f", "rawvideo",
+        "-pix_fmt", "bgr24",
+        "-",
+    ]
+
+    frame_size = width * height * 3
+    try:
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            bufsize=max(frame_size * 4, 4 * 1024 * 1024))
+    except Exception:
+        return []
+
     frames = []
-    for _ in range(count):
-        ret, frame = cap.read()
-        if not ret:
-            break
-        frames.append(frame)
-    cap.release()
+    try:
+        while len(frames) < count:
+            buf = proc.stdout.read(frame_size)
+            if not buf or len(buf) < frame_size:
+                break
+            frames.append(
+                np.frombuffer(buf, dtype=np.uint8)
+                  .reshape((height, width, 3))
+                  .copy())
+    finally:
+        try:
+            proc.stdout.close()
+        except Exception:
+            pass
+        try:
+            proc.wait(timeout=10)
+        except Exception:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
     return frames
 
 

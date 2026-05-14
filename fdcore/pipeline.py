@@ -147,7 +147,19 @@ def run_on_file(input_path: str, output_path: str, settings: dict,
     # decode, no bgr24 round-trip, no libx264 re-encode — bit-exact remux.
     # Eliminates the 8-bit YUV→RGB→YUV asymmetric ±1 LSB drift that the
     # transcode passthrough still incurred.
-    if passthrough and video_io.can_stream_copy(input_path, fmt):
+    #
+    # Skipped when the user explicitly set fps_override to a value other
+    # than the source's actual rate: `ffmpeg -c copy` can't rewrite the
+    # container timebase, so a user who picks 24 on a 24.04 source would
+    # otherwise see 24.04 still in the output. Falling through to the
+    # decode/re-encode passthrough path makes the new -r value actually
+    # land in the file.
+    src_fps = float(getattr(info, "fps", 0.0) or 0.0)
+    fps_change_requested = (
+        fps_override > 0 and abs(fps_override - src_fps) > 0.001)
+    if (passthrough
+            and not fps_change_requested
+            and video_io.can_stream_copy(input_path, fmt)):
         _phase("processing")
         _phase("encoding")
         video_io.copy_stream(input_path, output_path, frame_cap=frame_cap)

@@ -331,7 +331,7 @@ class AboutPage(QWidget):
             "border: none; background: transparent;")
         card_lay.addWidget(title)
 
-        version = QLabel("v0.1.0")
+        version = QLabel("v1.0.0")
         version.setAlignment(Qt.AlignCenter)
         version.setStyleSheet(
             "color: rgba(150, 154, 170, 200); "

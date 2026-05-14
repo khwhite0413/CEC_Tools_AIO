@@ -11,13 +11,14 @@ import time
 import cv2
 import numpy as np
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QImage, QPixmap, QPalette, QColor
+from PyQt5.QtGui import QImage, QPixmap, QPalette, QColor, QKeySequence
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                               QPushButton, QFileDialog, QProgressBar,
                               QPlainTextEdit, QMessageBox, QScrollArea,
                               QSplitter, QLineEdit, QGroupBox, QSpinBox,
                               QCheckBox, QToolButton, QMenu, QFrame,
-                              QFormLayout, QComboBox, QSizePolicy, QDialog)
+                              QFormLayout, QComboBox, QSizePolicy, QDialog,
+                              QShortcut)
 
 from app.i18n import tr
 from app.video_player import VideoPlayer
@@ -154,16 +155,15 @@ class InpaintPage(QWidget):
         self.mask_status.setStyleSheet(
             "color: rgba(180,184,200,200); padding-left: 6px;")
         preset_row.addWidget(self.mask_status, 1)
-
-        self.mask_thumb = QLabel()
-        self.mask_thumb.setFixedSize(64, 36)
-        self.mask_thumb.setFrameShape(QFrame.StyledPanel)
-        self.mask_thumb.setAlignment(Qt.AlignCenter)
-        self.mask_thumb.setStyleSheet(
-            "background-color: rgba(20,20,28,200); "
-            "border: 1px solid rgba(100,100,120,80);")
-        preset_row.addWidget(self.mask_thumb, 0)
         lay.addLayout(preset_row)
+
+        # Page-scoped A shortcut: toggle the alpha-mask overlay on the
+        # viewer above. WidgetWithChildrenShortcut limits scope so the
+        # key doesn't fire while the user is on a different tab — they'd
+        # have focus inside that other tab's widgets, not ours.
+        sc_overlay = QShortcut(Qt.Key_A, self)
+        sc_overlay.setContext(Qt.WidgetWithChildrenShortcut)
+        sc_overlay.activated.connect(self._toggle_mask_overlay)
 
         btn_row = QHBoxLayout()
         self.btn_preview = QPushButton(tr("btn_preview"))
@@ -467,7 +467,7 @@ class InpaintPage(QWidget):
         # Stale mask — new video may have different dimensions.
         self.current_mask = None
         self.mask_status.setText(tr("inpaint_no_mask"))
-        self.mask_thumb.clear()
+        self.player.clear_overlay()
         self._log(f"입력 로드: {path}")
 
     def _browse_output(self):
@@ -558,17 +558,21 @@ class InpaintPage(QWidget):
         self.current_mask = mask
         coverage = float((mask > 127).mean()) * 100.0
         self.mask_status.setText(
-            f"{tr('inpaint_mask_set')} — {scale_info} · {coverage:.1f}%")
-        self._update_mask_thumb(mask)
+            f"{tr('inpaint_mask_set')} — {scale_info} · {coverage:.1f}% "
+            f"({tr('inpaint_overlay_hint')})")
+        # Push the mask up to the viewer overlay (off by default — user
+        # presses A to toggle it on). Replaces the old 64x36 thumbnail
+        # box that used to live next to the preset button.
+        self.player.set_overlay_mask(mask)
         feather_str = " +feather" if self.chk_feather.isChecked() else ""
         self._log(f"프리셋 적용: {name} · {scale_info}{feather_str}")
 
-    def _update_mask_thumb(self, mask: np.ndarray):
-        tw, th = 64, 36
-        thumb = cv2.resize(mask, (tw, th), interpolation=cv2.INTER_AREA)
-        rgb = cv2.cvtColor(thumb, cv2.COLOR_GRAY2RGB)
-        qimg = QImage(rgb.data, tw, th, rgb.strides[0], QImage.Format_RGB888)
-        self.mask_thumb.setPixmap(QPixmap.fromImage(qimg.copy()))
+    def _toggle_mask_overlay(self):
+        if self.current_mask is None:
+            self._log("[A] 마스크가 없습니다 — 프리셋 적용 또는 마스크 편집 먼저 하세요.")
+            return
+        visible = self.player.toggle_overlay()
+        self._log(f"[A] 마스크 오버레이 {'ON' if visible else 'OFF'}")
 
     # ------------------------------------------------------------------
     # Run / cancel
@@ -691,8 +695,9 @@ class InpaintPage(QWidget):
         self.current_mask = new_mask
         coverage = float((new_mask > 127).mean()) * 100.0
         self.mask_status.setText(
-            f"{tr('inpaint_mask_set')} — 브러시 편집 · {coverage:.1f}%")
-        self._update_mask_thumb(new_mask)
+            f"{tr('inpaint_mask_set')} — 브러시 편집 · {coverage:.1f}% "
+            f"({tr('inpaint_overlay_hint')})")
+        self.player.set_overlay_mask(new_mask)
         self._log(f"브러시 마스크 적용 ({new_mask.shape[1]}×{new_mask.shape[0]}, "
                   f"커버리지 {coverage:.1f}%)")
 

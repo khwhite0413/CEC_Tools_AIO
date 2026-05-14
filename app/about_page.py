@@ -127,6 +127,13 @@ _FAQ_INPAINT_KO = [
      "워터마크 바깥 픽셀은 손실 0이고 처리 시간도 짧아져요. 4K 영상이라도 "
      "워터마크 영역이 320×160 정도면 모델은 그 작은 박스만 봅니다."),
 
+    ("뷰어에서 마스크가 어디에 적용되는지 미리 보려면?",
+     "인페인트 탭의 뷰어에 포커스가 있을 때 **A** 키를 누르면 알파 마스크 "
+     "오버레이가 토글됩니다. 빨간색 반투명으로 마스크 영역이 영상 위에 "
+     "표시되어, 재생하면서 모든 프레임에서 워터마크 위치가 잘 덮이는지 "
+     "확인할 수 있어요. 다시 A를 누르면 꺼지고, 이 단축키는 인페인트 탭 "
+     "전용입니다."),
+
     ("Dreamina 프리셋이 어떻게 자동으로 맞춰지나요?",
      "입력 영상의 가로/세로 비율을 보고 가로 영상이면 가로용 PNG, 세로 "
      "영상이면 9:16 PNG를 자동 선택합니다. 비율이 완전히 일치하면 그대로 "
@@ -154,6 +161,13 @@ _FAQ_INPAINT_EN = [
      "loss) and processing is much faster. Even on a 4K source, if the "
      "watermark sits in a ~320×160 corner, the model only ever sees "
      "that small box."),
+
+    ("How do I preview where the mask will be applied?",
+     "With focus inside the Inpaint tab viewer, press **A** to toggle "
+     "a semi-transparent red overlay showing the mask on top of the "
+     "video. Play the clip with the overlay on to verify the mask "
+     "tracks the watermark across every frame. Press A again to hide "
+     "it. The shortcut is Inpaint-tab-only."),
 
     ("How does the Dreamina preset auto-fit?",
      "It checks the input video's aspect ratio. Landscape videos get "
@@ -234,6 +248,199 @@ _FAQ_UPSCALE_EN = [
      "inference scales with the input size, but for 1080p → 8K the "
      "additional cv2 enlargement step also costs more. If you want a "
      "fast result, pick Native (source × 2)."),
+]
+
+
+# Batch FAQ — answers the most common "what does this tab even do" and
+# "where did my files go" questions. Stays short because the batch tab
+# is mostly self-explanatory once you've seen the inpaint/denoise/upscale
+# tabs individually.
+_FAQ_BATCH_KO = [
+    ("배치 탭은 어떨 때 쓰면 되나요?",
+     "여러 클립을 한 번에 인페인트 → 디노이즈 → 업스케일로 돌리고 싶을 때 "
+     "쓰세요. 단일 탭에서 따로따로 작업하면 클립마다 3번씩 클릭해야 하지만, "
+     "배치 탭은 큐에 파일을 넣고 [전체 실행] 한 번이면 끝입니다. 한 클립만 "
+     "넣어도 3단계 자동화 용도로 충분히 유용해요."),
+
+    ("배치 뷰어에서도 마스크 미리보기가 되나요?",
+     "네. 큐에서 클립을 선택하고 좌측 뷰어에 포커스를 둔 상태에서 **A 키**를 "
+     "누르면 그 클립에 적용될 마스크(커스텀 ✱가 있으면 그것, 없으면 Dreamina "
+     "자동)가 영상 위에 빨간색 반투명으로 표시됩니다. 인페인트 단일 탭과 동일 "
+     "UX이고, 다른 탭에서는 작동하지 않아요."),
+
+    ("Dreamina 자동 마스크가 워터마크를 살짝 못 덮어요.",
+     "인페인트 카드의 **「마스크 확장」** 수치 슬라이더로 자동 프리셋 마스크 "
+     "외곽을 N픽셀만큼 키울 수 있습니다. 4-8 정도면 가벼운 마진, 15+는 강하게 "
+     "확장. 커스텀 마스크(우클릭으로 직접 그린 것)에는 영향이 없어요 — "
+     "사용자가 의도해서 그린 그대로 사용됩니다."),
+
+    ("배치 큐의 일부 클립에만 다른 마스크를 적용할 수 있나요?",
+     "네. 큐의 클립을 **우클릭 → 「마스크 편집...」** 하면 브러시 / 사각형 / "
+     "타원 / 지우개 도구로 그 클립 전용 마스크를 그릴 수 있습니다. 적용한 "
+     "클립은 큐 행에 ✱ 표시가 붙고, 인페인트 단계에서 자동 Dreamina 프리셋 "
+     "대신 그 마스크가 쓰입니다. 우클릭 → 「커스텀 마스크 제거」로 자동 "
+     "프리셋으로 되돌릴 수 있어요. 마스크는 메모리에만 저장되므로 앱을 끄면 "
+     "사라집니다(휘발성)."),
+
+    ("마스크 편집기에서 첫 프레임 외 다른 프레임도 확인할 수 있나요?",
+     "네, 편집기 하단의 프레임 슬라이더로 영상의 임의 시점을 볼 수 있습니다. "
+     "마스크는 그대로 유지되고 배경 프레임만 바뀌어서, 워터마크가 영상 중후반에 "
+     "흔들리거나 사라지는지 검증할 때 유용해요. 단일 인페인트 탭의 마스크 "
+     "편집기에도 동일하게 적용됩니다."),
+
+    ("세 단계 중 일부만 돌릴 수 있나요?",
+     "네. 인페인트/디노이즈/업스케일 각 카드 제목 옆의 체크박스로 단계별 "
+     "활성/비활성을 토글할 수 있습니다. 업스케일만 켜면 큐의 클립들을 바로 "
+     "업스케일해서 output에 저장하고, 인페인트만 켜면 워터마크 제거 결과를 "
+     "바로 output에 저장합니다. 인페인트+디노이즈, 디노이즈+업스케일 같은 "
+     "두 단계 조합도 가능해요. 동작 원칙은 「마지막 활성 단계의 출력만 output "
+     "폴더로, 그 앞 단계 출력은 cache로 → 사용 즉시 자동 삭제」입니다. 단 "
+     "최소 한 단계는 켜야 [전체 실행]이 작동합니다."),
+
+    ("처리 순서가 어떻게 되나요? 클립별로 3단계를 끝낸 다음 다음 클립으로 가나요?",
+     "아니에요. 단계별로 일괄 처리합니다 — 큐의 모든 클립이 먼저 인페인트를 "
+     "끝낸 다음, 모든 클립이 디노이즈, 그다음 모든 클립이 업스케일을 거칩니다. "
+     "이렇게 하면 ProPainter / RAFT / OpenProteus 모델 가중치를 단계마다 "
+     "한 번만 로드하면 되니까 클립별 3단계 방식보다 GPU 메모리 효율이 "
+     "훨씬 좋아요."),
+
+    ("최종 결과물은 어디에 저장되나요?",
+     "기본은 프로젝트 폴더의 output/{yymmdd}_result/ 안입니다. 예를 들어 "
+     "2026년 5월 14일에 실행하면 output/260514_result/ 폴더가 생기고 그 안에 "
+     "각 클립의 최종본이 들어가요. 우측 상단 [출력 폴더] 입력란에 다른 경로를 "
+     "지정하면 그 경로 안에 {yymmdd}_result 서브폴더가 생깁니다 (외장 드라이브 "
+     "같은 곳도 OK). 같은 폴더로 두 번째 실행하면 _2, _3 꼬리표가 자동으로 "
+     "붙어 이전 결과물을 덮어쓰지 않습니다. 완료되면 탐색기로 폴더가 자동으로 "
+     "열립니다."),
+
+    ("중간 단계 결과물(인페인트, 디노이즈)도 저장되나요?",
+     "cache/batch_inpaint/, cache/batch_denoise/ 에 임시로 저장되긴 합니다. "
+     "다만 다음 단계 시작 직후 자동으로 삭제됩니다 — 디노이즈가 시작되면 "
+     "인페인트 캐시가 wipe되고, 업스케일이 시작되면 디노이즈 캐시가 wipe돼요. "
+     "이렇게 해야 디스크가 한 단계 분량 이상으로 폭주하지 않습니다. "
+     "중간 결과물이 필요하면 단일 탭에서 따로 처리하세요."),
+
+    ("처리 도중 [중지]를 누르면 어떻게 되나요?",
+     "현재 진행 중인 클립의 작업이 즉시 중단되고, 그 시점까지 만들어진 "
+     "캐시 파일은 다음 실행 시 자동으로 정리됩니다. 이미 완료된 단계의 "
+     "중간 결과물은 cache 폴더에 남아 있을 수 있는데, 다음 실행 또는 앱 "
+     "재시작 시 sweep됩니다. 중지 후 같은 큐로 다시 실행하면 처음부터 "
+     "다시 시작해요 — 이어서 처리는 지원하지 않습니다."),
+
+    ("각 단계의 출력 코덱은 어떻게 정하나요?",
+     "단계별로 독립적으로 설정합니다. 기본값은 모두 H.264 (MP4)이고, "
+     "ProRes (MOV)를 고르면 그 아래에 프로파일 드롭다운(422 / 422 HQ / 4444 / "
+     "4444 XQ 등)이 펼쳐집니다. 중간 단계도 ProRes로 두면 손실이 거의 없지만 "
+     "디스크 용량이 훨씬 많이 필요해요. 일반적으로는 셋 다 H.264로 두면 "
+     "충분합니다."),
+
+    ("큐의 처리 순서는 어떻게 정해지나요?",
+     "파일 이름을 기준으로 자동 정렬됩니다 — 숫자(0-9) → 알파벳(A-Z, "
+     "a-z) → 한글(가-하) 순서예요. 'clip_01.mp4', 'clip_02.mp4'처럼 자릿수를 "
+     "맞춰서 이름을 지으면 의도한 순서대로 처리됩니다. 큐에서 수동으로 "
+     "재배치하는 기능은 아직 없어요."),
+
+    ("뷰어 영역이 좁아서 답답해요.",
+     "좌측 뷰어와 우측 큐 영역 사이의 경계선을 드래그하면 비율을 자유롭게 "
+     "조절할 수 있습니다. 기본값은 뷰어가 약간 작은 45:55 비율인데, 어도비 "
+     "미디어 인코더 같은 도구를 참고했어요."),
+]
+
+_FAQ_BATCH_EN = [
+    ("When should I use the Batch tab?",
+     "When you want to run multiple clips through Inpaint → Denoise → "
+     "Upscale at once. Doing it in the individual tabs means 3 clicks "
+     "per clip; Batch tab is one [Run all] press. Useful even for a "
+     "single clip if you want the full 3-stage automation."),
+
+    ("Does the batch viewer support the mask preview too?",
+     "Yes. With a clip selected in the queue and focus inside the "
+     "batch viewer, press **A** to toggle a red semi-transparent "
+     "overlay showing the mask that will be applied (the custom ✱ "
+     "mask if there is one, otherwise the auto-Dreamina). Same UX as "
+     "the single Inpaint tab; the shortcut is scoped so it doesn't "
+     "fire from other tabs."),
+
+    ("The Dreamina auto-mask doesn't quite cover the watermark edges.",
+     "Use the **«Mask expansion»** spinner on the inpaint card to "
+     "dilate the auto preset outward by N pixels. 4-8 = light margin, "
+     "15+ = aggressive. The setting has no effect on custom masks "
+     "(those drawn via right-click → Edit mask) — those are used "
+     "exactly as drawn."),
+
+    ("Can a specific clip in the batch queue use its own custom mask?",
+     "Yes. **Right-click a queue row → «Edit mask...»** to draw a "
+     "custom mask with brush / rect / ellipse / eraser tools. Rows "
+     "that have one show a ✱ marker, and the inpaint stage uses that "
+     "mask instead of the auto-Dreamina preset. Right-click → «Remove "
+     "custom mask» reverts to the auto preset. Custom masks are kept "
+     "in memory only — they disappear when the app closes (volatile)."),
+
+    ("Can I scrub through frames in the mask editor, not just frame 0?",
+     "Yes — the slider at the bottom of the editor lets you preview "
+     "any frame. The mask layer stays put while the background frame "
+     "changes, so you can verify the mask still covers the watermark "
+     "if it drifts later in the clip. Works in the single-tab inpaint "
+     "mask editor too."),
+
+    ("Can I run only a subset of the three stages?",
+     "Yes — each stage card title has a checkbox. Turn off the stages "
+     "you don't want. Upscale-only, Inpaint-only, Denoise-only, "
+     "Inpaint+Denoise, Denoise+Upscale, etc. are all valid. The rule "
+     "is: «the last enabled stage's output goes to the output folder; "
+     "any earlier active stage routes through cache and gets wiped on "
+     "next-stage start.» So Inpaint-only puts the inpainted result "
+     "straight into output. At least one stage must be checked for "
+     "[Run all] to work."),
+
+    ("What's the processing order — clip-first or stage-first?",
+     "Stage-first. All queued clips finish Inpaint first, then all "
+     "finish Denoise, then all finish Upscale. This way the ProPainter / "
+     "RAFT / OpenProteus weights only need to load once per stage — much "
+     "more GPU memory-efficient than cycling through 3 models per clip."),
+
+    ("Where do the final results land?",
+     "Default: output/{yymmdd}_result/ under the project folder. e.g. "
+     "running on 2026-05-14 creates output/260514_result/ with one file "
+     "per clip. The [Output folder] field at the top of the batch tab "
+     "lets you point to a custom path (e.g. an external drive) — a "
+     "{yymmdd}_result subfolder is still created inside it. Same-day "
+     "re-runs into the same folder auto-suffix _2, _3 so earlier "
+     "batches aren't overwritten. Explorer opens the folder when the "
+     "batch completes."),
+
+    ("Are the intermediate (Inpaint / Denoise) results kept?",
+     "They get parked in cache/batch_inpaint/ and cache/batch_denoise/ "
+     "during the run, but get wiped as soon as the next stage starts — "
+     "Inpaint cache drops when Denoise starts; Denoise cache drops when "
+     "Upscale starts. This keeps disk usage bounded to roughly one "
+     "stage's worth at any time. If you need intermediates, process them "
+     "in the individual tabs."),
+
+    ("What happens if I press [Stop] mid-run?",
+     "The current clip's processing aborts immediately. Cache files "
+     "produced up to that point get swept on the next launch. Stopping "
+     "and re-running with the same queue restarts from the beginning — "
+     "resume is not supported."),
+
+    ("How are per-stage output codecs configured?",
+     "Each stage has an independent codec selector. Defaults are H.264 "
+     "(MP4) everywhere. Selecting ProRes (MOV) reveals a profile combo "
+     "(422 / 422 HQ / 4444 / 4444 XQ, etc.). ProRes intermediates "
+     "preserve quality but cost a lot more disk; H.264 across all three "
+     "is usually fine."),
+
+    ("How is the queue order decided?",
+     "Auto-sorted by filename — digits (0-9) first, then alphabet (A-Z, "
+     "a-z), then Hangul (가-하). Pad your numbers ('clip_01.mp4', "
+     "'clip_02.mp4') for predictable ordering. Manual reordering inside "
+     "the queue isn't supported yet."),
+
+    ("The viewer area feels too narrow.",
+     "Drag the divider between the left viewer and the right queue / "
+     "settings column — you can resize freely. Default is ~45:55 with "
+     "the viewer slightly smaller, modeled on Adobe Media Encoder's "
+     "layout."),
 ]
 
 
@@ -391,6 +598,7 @@ class AboutPage(QWidget):
             ("inpaint", _FAQ_INPAINT_KO if is_ko else _FAQ_INPAINT_EN),
             ("denoise", _FAQ_DENOISE_KO if is_ko else _FAQ_DENOISE_EN),
             ("upscale", _FAQ_UPSCALE_KO if is_ko else _FAQ_UPSCALE_EN),
+            ("batch",   _FAQ_BATCH_KO   if is_ko else _FAQ_BATCH_EN),
         ]
 
         wrap = QFrame()

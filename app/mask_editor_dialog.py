@@ -336,10 +336,19 @@ class MaskEditorDialog(QDialog):
         self.resize(1100, 720)
         self.setModal(True)
 
-        cap = cv2.VideoCapture(video_path)
-        ret, frame = cap.read()
-        cap.release()
+        # Keep the cv2 capture open so the frame seeker can scrub
+        # without re-opening the file on every slider move. The mask
+        # itself is video-resolution-static, so changing the visible
+        # frame only swaps the canvas background — it's a verification
+        # aid for watermarks that drift across the clip.
+        self._cap = cv2.VideoCapture(video_path)
+        if not self._cap.isOpened():
+            raise ValueError("비디오를 열지 못했습니다.")
+        self._total_frames = max(1, int(self._cap.get(cv2.CAP_PROP_FRAME_COUNT)))
+        ret, frame = self._cap.read()
         if not ret or frame is None:
+            self._cap.release()
+            self._cap = None
             raise ValueError("첫 프레임을 읽지 못했습니다.")
 
         root = QVBoxLayout(self)
@@ -393,6 +402,25 @@ class MaskEditorDialog(QDialog):
             self.canvas.set_mask(current_mask)
         root.addWidget(self.canvas, 1)
 
+        # --- Frame seeker --------------------------------------------------
+        # The mask is video-static, but the user often wants to verify
+        # it tracks the watermark across the whole clip — not just frame
+        # 0. Slider scrubs the canvas background only; mask layer stays
+        # put because set_frame() detects same-resolution input and
+        # keeps the existing mask image intact.
+        seek_row = QHBoxLayout()
+        seek_row.addWidget(QLabel(tr("mask_frame_label")))
+        self.frame_slider = QSlider(Qt.Horizontal)
+        self.frame_slider.setRange(0, max(0, self._total_frames - 1))
+        self.frame_slider.setValue(0)
+        self.frame_slider.valueChanged.connect(self._on_frame_changed)
+        seek_row.addWidget(self.frame_slider, 1)
+        self.frame_count_label = QLabel(f"1 / {self._total_frames}")
+        self.frame_count_label.setMinimumWidth(80)
+        self.frame_count_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        seek_row.addWidget(self.frame_count_label)
+        root.addLayout(seek_row)
+
         # --- OK / Cancel ---
         btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         btns.button(QDialogButtonBox.Ok).setText(tr("mask_apply"))
@@ -404,6 +432,43 @@ class MaskEditorDialog(QDialog):
     def _on_size_changed(self, v):
         self.canvas.set_brush_size(v)
         self.size_value_label.setText(f"{v} px")
+
+    def _on_frame_changed(self, idx: int):
+        if self._cap is None:
+            return
+        cur = int(self._cap.get(cv2.CAP_PROP_POS_FRAMES))
+        # cap.read() advances the position by one, so plain re-reads
+        # would drift. Seek when our idea of "where to be" doesn't match
+        # the cap's next-frame position.
+        if cur != idx:
+            self._cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+        ret, frame = self._cap.read()
+        if not ret or frame is None:
+            return
+        self.canvas.set_frame(frame)
+        self.frame_count_label.setText(f"{idx + 1} / {self._total_frames}")
+
+    def _release_cap(self):
+        if self._cap is not None:
+            try:
+                self._cap.release()
+            except Exception:
+                pass
+            self._cap = None
+
+    def accept(self):
+        self._release_cap()
+        super().accept()
+
+    def reject(self):
+        self._release_cap()
+        super().reject()
+
+    def closeEvent(self, e):
+        # Covers the X-button path and any other reason the dialog
+        # gets torn down without accept/reject going through.
+        self._release_cap()
+        super().closeEvent(e)
 
     def get_mask(self):
         return self.canvas.get_mask_numpy()

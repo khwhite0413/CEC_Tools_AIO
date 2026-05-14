@@ -24,6 +24,7 @@ from app.workers import DenoiseWorker, PreviewWorker, derive_output_path, probe_
 from app.about_page import AboutPage
 from app.inpaint_page import InpaintPage
 from app.upscale_page import UpscalePage
+from app.batch_page import BatchPage
 from app.chatbot_panel import ChatbotOverlay
 from app.i18n import tr, get_lang, set_lang, LANGS, LANG_LABELS
 
@@ -55,7 +56,13 @@ _PREVIEW_CACHE_FILES = (
     # Inpaint preview output (first ~80 frames, forced h264 mp4).
     "inpaint_preview.mp4",
 )
-_PREVIEW_CACHE_DIRS = ("preview_seq", "result_view_seq")
+_PREVIEW_CACHE_DIRS = (
+    "preview_seq", "result_view_seq",
+    # Batch tab intermediates — the orchestrator wipes these eagerly
+    # while running, but a hard crash or kill can leave them behind.
+    # Sweeping on next startup keeps cache/ from accumulating GBs.
+    "batch_inpaint", "batch_denoise",
+)
 
 
 def _cleanup_preview_cache(cache_dir: str) -> None:
@@ -146,11 +153,15 @@ class MainWindow(QMainWindow):
         self.inpaint_page = InpaintPage()
         self.denoise_page = self._build_denoise_page()
         self.upscale_page = UpscalePage()
+        self.batch_page = BatchPage()
+        self.batch_page.log.connect(self._log)
         self.about_page = AboutPage()
-        # Tab order: 0 = Inpaint, 1 = Denoise, 2 = Upscale, 3 = About.
+        # Tab order: 0 = Inpaint, 1 = Denoise, 2 = Upscale,
+        #            3 = Batch, 4 = About.
         self.stack.addWidget(self.inpaint_page)
         self.stack.addWidget(self.denoise_page)
         self.stack.addWidget(self.upscale_page)
+        self.stack.addWidget(self.batch_page)
         self.stack.addWidget(self.about_page)
 
         self._log("CEC All-In-One 시작.")
@@ -202,17 +213,23 @@ class MainWindow(QMainWindow):
         self.btn_tab_upscale.setCheckable(True)
         self.btn_tab_upscale.setStyleSheet(_TAB_BTN_QSS)
         self.btn_tab_upscale.clicked.connect(lambda: self.stack.setCurrentIndex(2))
+        self.btn_tab_batch = QPushButton(tr("tab_batch"))
+        self.btn_tab_batch.setCheckable(True)
+        self.btn_tab_batch.setStyleSheet(_TAB_BTN_QSS)
+        self.btn_tab_batch.clicked.connect(lambda: self.stack.setCurrentIndex(3))
         self.btn_tab_about = QPushButton(tr("tab_about"))
         self.btn_tab_about.setCheckable(True)
         self.btn_tab_about.setStyleSheet(_TAB_BTN_QSS)
-        self.btn_tab_about.clicked.connect(lambda: self.stack.setCurrentIndex(3))
+        self.btn_tab_about.clicked.connect(lambda: self.stack.setCurrentIndex(4))
         self.tab_group.addButton(self.btn_tab_inpaint)
         self.tab_group.addButton(self.btn_tab_denoise)
         self.tab_group.addButton(self.btn_tab_upscale)
+        self.tab_group.addButton(self.btn_tab_batch)
         self.tab_group.addButton(self.btn_tab_about)
         h.addWidget(self.btn_tab_inpaint)
         h.addWidget(self.btn_tab_denoise)
         h.addWidget(self.btn_tab_upscale)
+        h.addWidget(self.btn_tab_batch)
         h.addWidget(self.btn_tab_about)
 
         h.addStretch(1)
@@ -388,6 +405,15 @@ class MainWindow(QMainWindow):
             e.acceptProposedAction()
 
     def dropEvent(self, e: QDropEvent):
+        # Batch tab consumes ALL dropped paths (could be a folder or
+        # a multi-file selection). The other tabs only need the first
+        # video so they break out after one.
+        idx = self.stack.currentIndex()
+        if idx == 3:
+            # Forward the raw event to BatchPage so its dir-expansion
+            # logic stays in one place.
+            self.batch_page.dropEvent(e)
+            return
         for url in e.mimeData().urls():
             p = url.toLocalFile()
             if not p:
@@ -395,7 +421,6 @@ class MainWindow(QMainWindow):
             # Route the drop to whichever tab is currently in front. The
             # About tab has nothing to do with a video file, so drops on
             # it fall through to the denoise default.
-            idx = self.stack.currentIndex()
             if idx == 0:
                 self.inpaint_page._set_video(p)
             elif idx == 2:
@@ -779,6 +804,10 @@ class MainWindow(QMainWindow):
             pass
         try:
             self.upscale_page.shutdown()
+        except Exception:
+            pass
+        try:
+            self.batch_page.shutdown()
         except Exception:
             pass
         # Force the cv2 caps to drop their Windows file handles before we

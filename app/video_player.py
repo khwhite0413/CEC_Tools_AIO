@@ -4,6 +4,7 @@ import os
 import shutil
 
 import cv2
+import numpy as np
 from PyQt5.QtCore import Qt, QTimer, QRect, QUrl, pyqtSignal
 from PyQt5.QtGui import QImage, QPixmap, QPainter, QColor, QPen
 from PyQt5.QtMultimedia import (QMediaPlayer, QMediaContent,
@@ -231,6 +232,13 @@ class VideoPlayer(QWidget):
         # frame_view's wipe position.
         self._before_cap = None
         self._before_path = None
+        # Optional alpha-mask overlay (Inpaint tab uses this — pressing
+        # A toggles it on/off so the user can verify which pixels the
+        # preset / brush will inpaint). _raw_frame caches the most recent
+        # composited frame so toggling is instant — no cap re-read.
+        self._overlay_mask = None        # uint8 H x W binary mask
+        self._overlay_visible = False
+        self._raw_frame = None           # cached BGR uint8 frame, no overlay
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._on_tick)
@@ -406,6 +414,7 @@ class VideoPlayer(QWidget):
         self.frame_view.clear_image()
         self.time_label.setText("00:00.00 / 00:00.00")
         self.frame_label.setText("0 / 0")
+        self._raw_frame = None
         self._refresh_cursor()
 
     def play(self):
@@ -512,6 +521,75 @@ class VideoPlayer(QWidget):
         # Re-render the current frame with the new wipe position.
         if self._cap is not None and self.video_info is not None:
             self._show_frame_at(self._idx)
+
+    # ------------------------------------------------------------------
+    # Alpha-mask overlay
+    # ------------------------------------------------------------------
+    # The inpaint tab uses these to let the user verify the mask against
+    # the live frame. Default state is off — other tabs never call into
+    # this API so their viewers keep rendering frames untouched.
+    def set_overlay_mask(self, mask):
+        """Bind a binary mask (uint8 H x W). Stale masks at different
+        resolutions get resized to the current frame on render."""
+        self._overlay_mask = mask
+        if self._raw_frame is not None:
+            self._render_current()
+
+    def clear_overlay(self):
+        self._overlay_mask = None
+        self._overlay_visible = False
+        if self._raw_frame is not None:
+            self._render_current()
+
+    def set_overlay_visible(self, visible: bool):
+        new_state = bool(visible) and self._overlay_mask is not None
+        if new_state == self._overlay_visible:
+            return
+        self._overlay_visible = new_state
+        if self._raw_frame is not None:
+            self._render_current()
+
+    def toggle_overlay(self) -> bool:
+        """Flip the overlay. Returns the new visible state so callers
+        can update status labels. Falls back to False if no mask is
+        bound — toggling without a mask is a no-op."""
+        if self._overlay_mask is None:
+            return False
+        self._overlay_visible = not self._overlay_visible
+        if self._raw_frame is not None:
+            self._render_current()
+        return self._overlay_visible
+
+    def overlay_visible(self) -> bool:
+        return self._overlay_visible
+
+    def _apply_overlay(self, frame):
+        """Tint the frame red where the mask is white. Returns a new
+        ndarray so the caller's cached _raw_frame stays untouched."""
+        if (self._overlay_mask is None
+                or not self._overlay_visible or frame is None):
+            return frame
+        h, w = frame.shape[:2]
+        m = self._overlay_mask
+        if m.shape[:2] != (h, w):
+            m = cv2.resize(m, (w, h), interpolation=cv2.INTER_NEAREST)
+        # ~50% red tint inside the mask. Blend against the original so
+        # the underlying image stays readable rather than going solid.
+        tint = np.zeros_like(frame)
+        tint[:, :, 2] = 255  # BGR red channel
+        out = frame.copy()
+        mask3 = (m > 127)
+        if mask3.any():
+            out[mask3] = cv2.addWeighted(
+                frame, 0.45, tint, 0.55, 0)[mask3]
+        return out
+
+    def _render_current(self):
+        """Re-blit the cached raw frame through the overlay step.
+        Used when overlay toggles without a frame seek."""
+        if self._raw_frame is None:
+            return
+        self.frame_view.show_bgr(self._apply_overlay(self._raw_frame))
 
     def _composite_with_before(self, after_frame, idx: int):
         """If compare mode is on, blend the before frame in on the left side
@@ -628,7 +706,8 @@ class VideoPlayer(QWidget):
             return
         frame = self._composite_with_before(frame, idx)
         self._idx = idx
-        self.frame_view.show_bgr(frame)
+        self._raw_frame = frame
+        self.frame_view.show_bgr(self._apply_overlay(frame))
         fps = self.video_info.fps or 30.0
         total = self.video_info.frame_count
         self.time_label.setText(
@@ -675,7 +754,8 @@ class VideoPlayer(QWidget):
                 self._audio.play()
         frame = self._composite_with_before(frame, nxt)
         self._idx = nxt
-        self.frame_view.show_bgr(frame)
+        self._raw_frame = frame
+        self.frame_view.show_bgr(self._apply_overlay(frame))
         fps = self.video_info.fps or 30.0
         total = self.video_info.frame_count
         self.time_label.setText(

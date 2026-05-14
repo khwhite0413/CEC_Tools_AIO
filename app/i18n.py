@@ -19,7 +19,122 @@ _STRINGS = {
     "tab_inpaint":    {"ko": "인페인트", "en": "Inpaint"},
     "tab_denoise":    {"ko": "디노이즈", "en": "Denoise"},
     "tab_upscale":    {"ko": "업스케일", "en": "Upscale"},
+    "tab_batch":      {"ko": "배치", "en": "Batch"},
     "tab_about":      {"ko": "About",   "en": "About"},
+
+    # Batch page
+    "batch_output_folder":    {"ko": "출력 폴더",
+                                "en": "Output folder"},
+    "batch_output_placeholder": {
+        "ko": "비워두면 output/{yymmdd}_result/ 에 저장",
+        "en": "Empty → output/{yymmdd}_result/"},
+    "batch_output_tooltip":   {
+        "ko": ("최종 업스케일 결과물이 저장될 기본 폴더.<br>"
+               "비워두면 프로젝트 폴더의 output/ 안에, 직접 지정하면 그 "
+               "폴더 안에 <b>{yymmdd}_result</b> 서브폴더가 생기고 그 "
+               "안에 클립들이 저장됩니다.<br>"
+               "같은 폴더로 두 번째 실행하면 <b>_2</b>, <b>_3</b> "
+               "꼬리표가 붙어 이전 결과물을 덮어쓰지 않습니다."),
+        "en": ("Base folder for the final upscaled deliverables.<br>"
+               "Empty → project's output/. Pick a custom path and a "
+               "<b>{yymmdd}_result</b> subfolder is created inside it "
+               "with the clips inside.<br>"
+               "Re-running into the same folder appends <b>_2</b>, "
+               "<b>_3</b> so earlier batches aren't overwritten.")},
+    "batch_output_pick":      {"ko": "출력 폴더 선택",
+                                "en": "Pick output folder"},
+    "batch_output_bad":       {"ko": "출력 폴더를 만들 수 없습니다:",
+                                "en": "Cannot create output folder:"},
+    "batch_queue_title":      {"ko": "처리 큐 ({n}개)",
+                                "en": "Queue ({n} item(s))"},
+    "batch_queue_empty":      {"ko": "비디오 파일을 끌어다 놓거나 [추가]를 눌러 큐를 채우세요.",
+                                "en": "Drag video files here or press [Add]."},
+    "batch_btn_add":          {"ko": "추가", "en": "Add"},
+    "batch_btn_remove":       {"ko": "선택 삭제", "en": "Remove"},
+    "batch_btn_clear":        {"ko": "비우기", "en": "Clear"},
+    "batch_btn_run":          {"ko": "전체 실행", "en": "Run all"},
+    "batch_btn_stop":         {"ko": "중지", "en": "Stop"},
+    "batch_section_inpaint":  {"ko": "1) 인페인트 (워터마크 제거)",
+                                "en": "1) Inpaint (watermark removal)"},
+    "batch_section_denoise":  {"ko": "2) 디노이즈 (시간적 광학흐름)",
+                                "en": "2) Denoise (temporal optical flow)"},
+    "batch_section_upscale":  {"ko": "3) 업스케일 (최종 출력)",
+                                "en": "3) Upscale (final output)"},
+    "batch_label_preset":     {"ko": "프리셋", "en": "Preset"},
+    "batch_label_mask_dilation": {"ko": "마스크 확장 (Dreamina 자동)",
+                                    "en": "Mask expansion (Dreamina auto)"},
+    "batch_tooltip_mask_dilation": {
+        "ko": ("Dreamina 자동 마스크의 가장자리를 N 픽셀만큼 외곽으로 확장.<br>"
+               "프리셋이 워터마크 가장자리를 살짝 못 덮을 때 안전 마진을 "
+               "추가합니다.<br>"
+               "0: 그대로 사용 (기본), 4-8: 가벼운 마진, 15+: 강한 확장.<br>"
+               "<b>커스텀 마스크(✱)에는 적용 안 됨</b> — 사용자가 그린 그대로 사용."),
+        "en": ("Dilate the Dreamina auto-mask outward by N pixels.<br>"
+               "Adds a safety margin when the preset doesn't quite "
+               "cover the watermark edges.<br>"
+               "0: as-is (default), 4-8: light margin, 15+: aggressive.<br>"
+               "<b>Has no effect on custom masks (✱)</b> — they're used as drawn.")},
+    "batch_queue_tip":        {
+        "ko": "💡 클립 우클릭 → 커스텀 마스크 편집  ·  뷰어에서 A 키 → 알파 마스크 미리보기 토글",
+        "en": "💡 Right-click a clip → edit custom mask  ·  Press A in the viewer → toggle alpha mask preview"},
+    "batch_label_batch_frames": {"ko": "Max batch frames (0=전체)",
+                                  "en": "Max batch frames (0=all)"},
+    "batch_label_batch_size": {"ko": "Batch size", "en": "Batch size"},
+    "batch_tooltip_batch_frames": {
+        "ko": ("한 번에 GPU로 보내는 프레임 수의 상한. "
+               "0이면 전체 영상을 한 번에 처리 (가장 빠름).<br>"
+               "VRAM 부족할 때만 50/100 같은 값으로 분할하세요."),
+        "en": ("Max frames sent to the GPU at once. 0 = whole clip in "
+               "one pass (fastest).<br>"
+               "Lower this (50/100) only when you hit VRAM limits.")},
+    "batch_tooltip_batch_size": {
+        "ko": ("디노이즈 모델이 한 번에 처리할 프레임 묶음 크기. "
+               "기본 4. VRAM 부족하면 2 또는 1로 줄이세요."),
+        "en": ("Frames per GPU batch for the denoise model. Default 4. "
+               "Reduce to 2 or 1 if you hit VRAM limits.")},
+    "batch_menu_edit_mask":   {"ko": "마스크 편집...",
+                                "en": "Edit mask..."},
+    "batch_menu_edit_mask_existing": {
+        "ko": "마스크 편집... (커스텀 적용됨)",
+        "en": "Edit mask... (custom applied)"},
+    "batch_menu_remove_mask": {"ko": "커스텀 마스크 제거",
+                                "en": "Remove custom mask"},
+    "batch_preset_dreamina":  {"ko": "Dreamina (자동 가로/세로 감지)",
+                                "en": "Dreamina (auto landscape/portrait)"},
+    "batch_label_window":     {"ko": "Window size", "en": "Window size"},
+    "batch_label_model":      {"ko": "모델", "en": "Model"},
+    "batch_label_target":     {"ko": "출력 해상도", "en": "Target resolution"},
+    "batch_target_native":    {"ko": "원본 × 2 (Native)", "en": "Source × 2 (Native)"},
+    "batch_label_codec":      {"ko": "출력 코덱", "en": "Output codec"},
+    "batch_codec_h264":       {"ko": "H.264 (MP4)", "en": "H.264 (MP4)"},
+    "batch_codec_prores":     {"ko": "ProRes (MOV)", "en": "ProRes (MOV)"},
+    "batch_label_profile":    {"ko": "ProRes 프로파일", "en": "ProRes profile"},
+    "batch_status_idle":      {"ko": "대기 중 — 큐에 파일을 추가하고 [전체 실행]을 누르세요.",
+                                "en": "Idle — add files and press Run all."},
+    "batch_status_stage":     {"ko": "[{stage}] {fname} ({idx}/{total})",
+                                "en": "[{stage}] {fname} ({idx}/{total})"},
+    "batch_stage_inpaint":    {"ko": "인페인트", "en": "Inpaint"},
+    "batch_stage_denoise":    {"ko": "디노이즈", "en": "Denoise"},
+    "batch_stage_upscale":    {"ko": "업스케일", "en": "Upscale"},
+    "batch_status_done":      {"ko": "완료 — {n}개 파일 → {out}",
+                                "en": "Done — {n} file(s) → {out}"},
+    "batch_status_cancelled": {"ko": "취소됨", "en": "Cancelled"},
+    "batch_status_error":     {"ko": "오류: {msg}", "en": "Error: {msg}"},
+    "batch_item_queued":      {"ko": "대기 중", "en": "Queued"},
+    "batch_item_inpaint":     {"ko": "인페인트 중...", "en": "Inpainting..."},
+    "batch_item_denoise":     {"ko": "디노이즈 중...", "en": "Denoising..."},
+    "batch_item_upscale":     {"ko": "업스케일 중...", "en": "Upscaling..."},
+    "batch_item_done_stage":  {"ko": "✓ {stage}", "en": "✓ {stage}"},
+    "batch_item_done_all":    {"ko": "✓ 완료", "en": "✓ Done"},
+    "batch_item_error":       {"ko": "✗ 오류", "en": "✗ Error"},
+    "batch_pick_files":       {"ko": "비디오 파일 선택 (다중)",
+                                "en": "Pick video files (multi)"},
+    "batch_no_files":         {"ko": "큐가 비어있습니다. 파일을 먼저 추가하세요.",
+                                "en": "Queue is empty. Add files first."},
+    "batch_no_stages":        {"ko": "실행할 단계가 하나도 없습니다 — 인페인트/디노이즈/업스케일 중 최소 하나를 활성화하세요.",
+                                "en": "No stages enabled — turn on at least one of Inpaint / Denoise / Upscale."},
+    "batch_confirm_stop":     {"ko": "정말 중지하시겠습니까? 진행 중인 작업이 취소됩니다.",
+                                "en": "Stop the batch? Current work will be cancelled."},
 
     # Upscale page
     "upscale_section_params":  {"ko": "Upscale 파라미터",
@@ -106,6 +221,8 @@ _STRINGS = {
                               "en": "Mask applied"},
     "inpaint_overlay_toggle": {"ko": "마스크 오버레이 표시",
                                 "en": "Show mask overlay"},
+    "inpaint_overlay_hint":  {"ko": "뷰어에서 A 키로 미리보기",
+                               "en": "Press A in the viewer to preview"},
     "inpaint_section_params": {"ko": "ProPainter 파라미터",
                                 "en": "ProPainter parameters"},
     "inpaint_feather":      {"ko": "마스크 가장자리 부드럽게",
@@ -133,6 +250,7 @@ _STRINGS = {
     "mask_undo":         {"ko": "실행 취소", "en": "Undo"},
     "mask_clear":        {"ko": "모두 지우기", "en": "Clear all"},
     "mask_apply":        {"ko": "적용",    "en": "Apply"},
+    "mask_frame_label":  {"ko": "프레임:",  "en": "Frame:"},
     "inpaint_label_model":      {"ko": "모델", "en": "Model"},
     "inpaint_model_propainter": {"ko": "ProPainter",
                                   "en": "ProPainter"},
@@ -240,12 +358,13 @@ _STRINGS = {
         "en": "Noise preview  ·  Right-click → Save As"},
 
     # About page
-    "about_tagline": {"ko": "AI 영상 후처리 통합 도구 — 인페인트 · 디노이즈 · 업스케일",
-                      "en": "All-in-one AI video post-processing — inpaint, denoise, upscale"},
+    "about_tagline": {"ko": "AI 영상 후처리 통합 도구 — 인페인트 · 디노이즈 · 업스케일 · 배치",
+                      "en": "All-in-one AI video post-processing — inpaint, denoise, upscale, batch"},
     "about_contact": {"ko": "Contact", "en": "Contact"},
     "about_subtab_inpaint":  {"ko": "인페인트", "en": "Inpaint"},
     "about_subtab_denoise":  {"ko": "디노이즈", "en": "Denoise"},
     "about_subtab_upscale":  {"ko": "업스케일", "en": "Upscale"},
+    "about_subtab_batch":    {"ko": "배치", "en": "Batch"},
 
     # Output format card — shared by Inpaint + Upscale (Denoise has its
     # own richer card in parameter_panel.py).

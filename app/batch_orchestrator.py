@@ -114,7 +114,6 @@ def _avoid_collision(path: str) -> str:
 
 
 def _compute_dreamina_mask(video_path: str,
-                           apply_feather: bool = False,
                            dilation: int = 0) -> Optional[np.ndarray]:
     """Resolve the Dreamina preset mask for a given clip.
 
@@ -126,8 +125,6 @@ def _compute_dreamina_mask(video_path: str,
     iterations of a 3x3 ellipse kernel — i.e. roughly `dilation` pixels
     on each side. Used when the Dreamina preset doesn't quite cover the
     watermark and the user wants a safety margin without redrawing.
-    Applied BEFORE the optional feather pass so the soft edge wraps the
-    expanded shape, not the original.
     """
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
@@ -168,12 +165,6 @@ def _compute_dreamina_mask(video_path: str,
     if dilation > 0:
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
         mask = cv2.dilate(mask, kernel, iterations=int(dilation))
-
-    if apply_feather:
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        mask = cv2.dilate(mask, kernel, iterations=1)
-        mask = cv2.GaussianBlur(mask, (3, 3), 0)
-        _, mask = cv2.threshold(mask, 10, 255, cv2.THRESH_BINARY)
 
     return mask
 
@@ -411,7 +402,6 @@ class BatchOrchestrator(QThread):
         if mask is None:
             mask = _compute_dreamina_mask(
                 src,
-                apply_feather=self._inpaint_settings.get("feather", False),
                 dilation=int(
                     self._inpaint_settings.get("dreamina_dilation_px", 0)))
         if mask is None:

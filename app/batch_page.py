@@ -723,7 +723,6 @@ class BatchPage(QWidget):
             try:
                 mask = _compute_dreamina_mask(
                     path,
-                    apply_feather=False,
                     dilation=int(self.inp_mask_dilation.value()))
             except Exception:
                 mask = None
@@ -748,7 +747,6 @@ class BatchPage(QWidget):
             "output_format": self.inp_codec.codec(),
             "prores_profile": self.inp_codec.prores_profile(),
             "fp16": True,
-            "feather": False,
             # ProPainter defaults (matches InpaintPage). The user didn't
             # ask for per-stage advanced controls in v1 of the batch tab.
             "subvideo_length": 80,

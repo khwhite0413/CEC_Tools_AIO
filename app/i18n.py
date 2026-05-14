@@ -225,8 +225,6 @@ _STRINGS = {
                                "en": "Press A in the viewer to preview"},
     "inpaint_section_params": {"ko": "ProPainter 파라미터",
                                 "en": "ProPainter parameters"},
-    "inpaint_feather":      {"ko": "마스크 가장자리 부드럽게",
-                              "en": "Feather mask edges"},
     "inpaint_fp16":         {"ko": "FP16 (CUDA만)", "en": "FP16 (CUDA only)"},
     "inpaint_label_neighbor": {"ko": "Neighbor length", "en": "Neighbor length"},
     "inpaint_label_ref_stride": {"ko": "Ref stride", "en": "Ref stride"},
@@ -278,11 +276,6 @@ _STRINGS = {
                "<b>On (default):</b> half the VRAM, 1.5–2× faster<br>"
                "<b>Off:</b> FP32, marginally more accurate, slower<br>"
                "Ignored in CPU mode.")},
-    "inpaint_tooltip_feather": {
-        "ko": ("마스크 가장자리를 약간 부드럽게 처리 (1px 팽창 + 가우시안).<br>"
-               "워터마크 경계 잔상이 보이면 켜두는 게 안전합니다."),
-        "en": ("Soften mask edges slightly (1-px dilate + Gaussian blur).<br>"
-               "Reduces edge artifacts around the inpaint boundary.")},
     "inpaint_tooltip_neighbor": {
         "ko": ("현재 프레임 양옆에서 참조할 이웃 프레임 수 (기본 10).<br>"
                "<b>높이면:</b> 시간적 일관성 ↑, VRAM ↑<br>"

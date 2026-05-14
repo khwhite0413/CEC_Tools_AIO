@@ -50,8 +50,8 @@ AI 영상 후처리 통합 데스크톱 도구. PyQt5 기반. 인페인트 / 디
 - **미리보기 (앞 80프레임)** — 짧게 미리 확인 (캐시에 h264로 출력)
 - **전체 처리** — 사용자 지정 출력 경로 + 코덱
 - 파라미터 (기본 모드): 모델 (ProPainter) · Max batch frames (VRAM 분할용)
-- 파라미터 (Dev 모드): FP16, feather, neighbor / ref_stride / subvideo /
-  raft_iter / mask_dilation
+- 파라미터 (기본): 모델, Max batch frames, 마스크 확장 (px)
+- 파라미터 (Dev 모드): FP16, neighbor / ref_stride / subvideo / raft_iter
 
 ### 2. 디노이즈 (FlowDenoise)
 

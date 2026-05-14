@@ -78,9 +78,9 @@ class InpaintPage(QWidget):
         self.current_mask = None  # uint8 H x W, full-frame
         # Name of the preset that produced current_mask. Set in
         # _apply_preset, cleared when the user draws via the brush
-        # editor or loads a new video. Used by the live mask-dilation /
-        # feather sliders to re-derive the preset mask on the fly so
-        # the A-key overlay reflects the latest values.
+        # editor or loads a new video. Used by the live mask-dilation
+        # slider to re-derive the preset mask on the fly so the A-key
+        # overlay reflects the latest value.
         self._active_preset_name = None
         self.worker = None
         # Distinguishes preview vs full run in _on_finished — preview
@@ -278,14 +278,6 @@ class InpaintPage(QWidget):
         lbl_dilation.setToolTip(tr("inpaint_tooltip_dilation"))
         basic.addRow(lbl_dilation, self.sb_dilation)
 
-        # Feather (also formerly dev-mode-only). Soft edge applied
-        # after the dilation pass.
-        self.chk_feather = QCheckBox(tr("inpaint_feather"))
-        self.chk_feather.setChecked(True)
-        self.chk_feather.setToolTip(tr("inpaint_tooltip_feather"))
-        self.chk_feather.toggled.connect(self._on_mask_settings_changed)
-        basic.addRow("", self.chk_feather)
-
         params_lay.addLayout(basic)
 
         # --- Dev-mode-only rows (hidden by default) ---
@@ -314,10 +306,13 @@ class InpaintPage(QWidget):
         self.chk_fp16.setChecked(True)
         _add_adv_check("inpaint_tooltip_fp16", self.chk_fp16)
 
-        # chk_feather and sb_dilation were promoted to the basic block
-        # above. Kept out of the dev section here so there's exactly
-        # one widget instance feeding settings(). Deleting these two
-        # rows is intentional, not an oversight.
+        # sb_dilation was promoted to the basic block above. The
+        # former "feather" checkbox was removed entirely — its
+        # implementation (1px dilate + Gaussian + re-threshold) just
+        # produced a slightly-rounded BINARY mask, not a real soft-
+        # alpha edge, and downstream binarizes anyway, so the toggle
+        # was misleading. Kept out of the dev section here so there's
+        # exactly one widget instance feeding settings().
 
         self.sb_neighbor = QSpinBox()
         self.sb_neighbor.setRange(2, 30); self.sb_neighbor.setValue(10)
@@ -581,21 +576,14 @@ class InpaintPage(QWidget):
             scale_info = (f"비율 다름 ({preset_ar:.3f} → {video_ar:.3f}, "
                           f"{anchor} 정렬)")
 
-        # Mask expansion BEFORE feather so the soft edge wraps the
-        # dilated shape (matches batch tab semantics). Pre-applying
-        # here means the worker's mask_dilation setting is zeroed at
-        # submit time — ProPainter's internal scipy dilation would
-        # otherwise double-expand on top of this.
+        # Mask expansion — pre-applied here so the worker's
+        # mask_dilation setting is zeroed at submit time (ProPainter's
+        # internal scipy dilation would otherwise double-expand on
+        # top of this).
         dilation_px = int(self.sb_dilation.value())
         if dilation_px > 0:
             kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
             mask = cv2.dilate(mask, kernel, iterations=dilation_px)
-
-        if self.chk_feather.isChecked():
-            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-            mask = cv2.dilate(mask, kernel, iterations=1)
-            mask = cv2.GaussianBlur(mask, (3, 3), 0)
-            _, mask = cv2.threshold(mask, 10, 255, cv2.THRESH_BINARY)
 
         self.current_mask = mask
         self._active_preset_name = name
@@ -607,16 +595,14 @@ class InpaintPage(QWidget):
         # presses A to toggle it on). Replaces the old 64x36 thumbnail
         # box that used to live next to the preset button.
         self.player.set_overlay_mask(mask)
-        feather_str = " +feather" if self.chk_feather.isChecked() else ""
         dil_str = f" +dil{dilation_px}" if dilation_px > 0 else ""
-        self._log(f"프리셋 적용: {name} · {scale_info}{feather_str}{dil_str}")
+        self._log(f"프리셋 적용: {name} · {scale_info}{dil_str}")
 
     def _on_mask_settings_changed(self, *_):
-        """Live re-apply when sb_dilation / chk_feather change AND a
-        preset is currently active. Brush-edited masks aren't touched
+        """Live re-apply when sb_dilation changes AND a preset is
+        currently active. Brush-edited masks aren't touched
         (we shouldn't dilate user-drawn pixels — that's the same
-        convention the batch tab follows). Logs are suppressed to
-        avoid spam while the user drags the spinner."""
+        convention the batch tab follows)."""
         if self._active_preset_name is None:
             return
         # Calling _apply_preset rebuilds current_mask and pushes the new
@@ -756,7 +742,7 @@ class InpaintPage(QWidget):
             return
         self.current_mask = new_mask
         # Brush-drawn mask leaves preset-tracking state cleared so the
-        # dilation/feather sliders don't silently overwrite the user's
+        # dilation slider doesn't silently overwrite the user's
         # hand-drawn pixels on the next valueChanged signal. Same
         # convention as the batch tab.
         self._active_preset_name = None

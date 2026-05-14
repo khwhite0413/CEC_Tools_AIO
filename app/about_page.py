@@ -138,8 +138,8 @@ _FAQ_INPAINT_KO = [
      "입력 영상의 가로/세로 비율을 보고 가로 영상이면 가로용 PNG, 세로 "
      "영상이면 9:16 PNG를 자동 선택합니다. 비율이 완전히 일치하면 그대로 "
      "스케일링하고, 비율이 다르면 anchor 위치(Dreamina는 좌상단)에 맞춰 "
-     "배치합니다. 「가장자리 부드럽게」 옵션을 켜두면 마스크 경계에 1px "
-     "팽창 + 약한 가우시안 블러가 들어가서 경계 잔상이 줄어듭니다."),
+     "배치합니다. 「마스크 확장(px)」 슬라이더로 외곽을 N픽셀 키워 워터마크 "
+     "경계를 안정적으로 덮을 수 있습니다."),
 
     ("ProPainter는 어떤 영상에서 잘 안 되나요?",
      "(1) 카메라가 완전히 정지하고 피사체도 안 움직이는 정지 화면 — 인접 "
@@ -174,8 +174,9 @@ _FAQ_INPAINT_EN = [
      "the landscape PNG, portrait get the 9:16 PNG. If the aspect "
      "matches the preset, it scales 1:1. If not, it scales by the "
      "smaller dimension and anchors at the preset's corner (top-left "
-     "for Dreamina). The «feather edges» option applies a 1-px dilate "
-     "+ light Gaussian blur to soften the mask boundary."),
+     "for Dreamina). The «Mask expansion (px)» spinner dilates the "
+     "preset outward by N pixels to comfortably cover the watermark "
+     "edges."),
 
     ("When does ProPainter struggle?",
      "(1) Truly static shots — no temporal context to borrow from, "

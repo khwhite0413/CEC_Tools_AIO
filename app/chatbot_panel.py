@@ -12,8 +12,8 @@ import json
 import urllib.request
 import urllib.error
 
-from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal
-from PyQt5.QtGui import QKeyEvent
+from PyQt5.QtCore import Qt, QTimer, QThread, QPoint, QSize, pyqtSignal
+from PyQt5.QtGui import QKeyEvent, QPainter, QPen
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                               QLabel, QPlainTextEdit, QScrollArea, QFrame)
 
@@ -168,6 +168,105 @@ class _ChatInput(QPlainTextEdit):
         super().keyPressEvent(e)
 
 
+class _DragHeader(QWidget):
+    """Title-bar widget that drags the parent panel when held with the
+    left mouse button. Children (close button etc.) still receive their
+    own clicks normally — Qt routes the event to the deepest child first.
+    """
+
+    def __init__(self, panel, overlay, parent=None):
+        super().__init__(parent)
+        self.panel = panel
+        self.overlay = overlay
+        self.setCursor(Qt.SizeAllCursor)
+        self._panel_origin = None  # panel.pos() at drag start
+        self._mouse_origin = None  # global mouse pos at drag start
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self._panel_origin = self.panel.pos()
+            self._mouse_origin = e.globalPos()
+            e.accept()
+
+    def mouseMoveEvent(self, e):
+        if (e.buttons() & Qt.LeftButton
+                and self._panel_origin is not None
+                and self._mouse_origin is not None):
+            delta = e.globalPos() - self._mouse_origin
+            new_x = self._panel_origin.x() + delta.x()
+            new_y = self._panel_origin.y() + delta.y()
+            parent = self.panel.parent()
+            if parent is not None:
+                new_x = max(0, min(new_x, parent.width() - self.panel.width()))
+                new_y = max(0, min(new_y, parent.height() - self.panel.height()))
+            self.panel.move(new_x, new_y)
+            self.overlay._user_positioned = True
+            e.accept()
+
+    def mouseReleaseEvent(self, e):
+        self._panel_origin = None
+        self._mouse_origin = None
+        e.accept()
+
+
+class _PanelResizeGrip(QWidget):
+    """Bottom-right resize handle that resizes ONLY the chatbot panel.
+
+    Qt's stock QSizeGrip walks up to `parentWidget().window()` and resizes
+    that — for a child overlay panel inside a QMainWindow, that means the
+    main window grows instead of the panel. We track mouse deltas
+    ourselves and call panel.resize() directly, clamped to the panel's
+    minimumSize() and to the host widget's bounds so the panel can't
+    escape the visible area.
+    """
+
+    def __init__(self, panel, parent=None):
+        super().__init__(parent)
+        self.panel = panel
+        self.setFixedSize(16, 16)
+        self.setCursor(Qt.SizeFDiagCursor)
+        self._start_size = None
+        self._mouse_origin = None
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        pen = QPen(Qt.gray)
+        pen.setWidth(1)
+        p.setPen(pen)
+        w, h = self.width(), self.height()
+        for off in (3, 7, 11):
+            p.drawLine(w - off, h - 2, w - 2, h - off)
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self._start_size = self.panel.size()
+            self._mouse_origin = e.globalPos()
+            e.accept()
+
+    def mouseMoveEvent(self, e):
+        if (e.buttons() & Qt.LeftButton
+                and self._start_size is not None
+                and self._mouse_origin is not None):
+            delta = e.globalPos() - self._mouse_origin
+            new_w = self._start_size.width() + delta.x()
+            new_h = self._start_size.height() + delta.y()
+            min_w = self.panel.minimumWidth()
+            min_h = self.panel.minimumHeight()
+            new_w = max(min_w, new_w)
+            new_h = max(min_h, new_h)
+            host = self.panel.parent()
+            if host is not None:
+                new_w = min(new_w, host.width() - self.panel.x())
+                new_h = min(new_h, host.height() - self.panel.y())
+            self.panel.resize(new_w, new_h)
+            e.accept()
+
+    def mouseReleaseEvent(self, e):
+        self._start_size = None
+        self._mouse_origin = None
+        e.accept()
+
+
 class ChatbotOverlay:
     """Bottom-right floating bubble + popup chat panel.
 
@@ -183,6 +282,10 @@ class ChatbotOverlay:
         self._messages = []
         self._worker = None
         self._typing_wrap = None
+        # Set to True the moment the user drags the panel by its header.
+        # reposition() then leaves the panel where they put it instead of
+        # re-snapping to the bottom-right default on window resize.
+        self._user_positioned = False
 
         self._build_bubble()
         self._build_panel()
@@ -211,7 +314,10 @@ class ChatbotOverlay:
 
     def _build_panel(self):
         self.panel = QFrame(self.parent)
-        self.panel.setFixedSize(380, 520)
+        # Initial size; user can resize via the QSizeGrip below. Min
+        # size keeps the panel usable even when shrunk hard.
+        self.panel.resize(380, 520)
+        self.panel.setMinimumSize(300, 360)
         self.panel.setStyleSheet(
             "QFrame {"
             "  background-color: #1a1a26;"
@@ -223,7 +329,12 @@ class ChatbotOverlay:
         lay.setContentsMargins(14, 12, 14, 12)
         lay.setSpacing(8)
 
-        head = QHBoxLayout()
+        # Title bar acts as the drag handle for moving the whole panel.
+        # Wrap the row in a _DragHeader widget so its mouse events
+        # translate into panel.move().
+        head_widget = _DragHeader(self.panel, self)
+        head = QHBoxLayout(head_widget)
+        head.setContentsMargins(0, 0, 0, 0)
         title = QLabel(tr("chatbot_title"))
         title.setStyleSheet(
             "font-weight: 600; font-size: 11pt; "
@@ -242,7 +353,7 @@ class ChatbotOverlay:
         )
         close_btn.clicked.connect(self.close_panel)
         head.addWidget(close_btn)
-        lay.addLayout(head)
+        lay.addWidget(head_widget)
 
         # Message area
         self.scroll = QScrollArea()
@@ -276,6 +387,17 @@ class ChatbotOverlay:
         self.send_btn.clicked.connect(self._on_send)
         in_row.addWidget(self.send_btn, 0)
         lay.addLayout(in_row)
+
+        # Resize handle at the bottom-right corner. Custom grip — Qt's
+        # QSizeGrip would resize the top-level window (the QMainWindow)
+        # because self.panel is a child widget, not its own top-level.
+        grip_row = QHBoxLayout()
+        grip_row.setContentsMargins(0, 0, 0, 0)
+        grip_row.setSpacing(0)
+        grip_row.addStretch(1)
+        grip = _PanelResizeGrip(self.panel, parent=self.panel)
+        grip_row.addWidget(grip, 0, Qt.AlignBottom | Qt.AlignRight)
+        lay.addLayout(grip_row)
 
         # Auto-scroll when the scroll content's range grows — covers the
         # case where a long assistant reply pushes scrollbar.max up
@@ -422,13 +544,28 @@ class ChatbotOverlay:
             return
         m = 18
         pw, ph = self.parent.width(), self.parent.height()
+        # Bubble always pins to bottom-right (it's the anchor; user
+        # never moves it, only the panel).
         self.bubble.move(pw - self.bubble.width() - m,
                           ph - self.bubble.height() - m)
-        panel_x = pw - self.panel.width() - m
-        panel_y = ph - self.bubble.height() - m - self.panel.height() - 10
-        if panel_y < 10:
-            panel_y = 10
-        self.panel.move(panel_x, panel_y)
+
+        if self._user_positioned:
+            # Respect the user's drag — only clamp back into bounds
+            # so the panel can't escape after a window shrink.
+            x = max(0, min(self.panel.x(),
+                            max(0, pw - self.panel.width())))
+            y = max(0, min(self.panel.y(),
+                            max(0, ph - self.panel.height())))
+            self.panel.move(x, y)
+        else:
+            # First-time / default placement: above the bubble, anchored
+            # bottom-right with the same margin.
+            panel_x = pw - self.panel.width() - m
+            panel_y = ph - self.bubble.height() - m - self.panel.height() - 10
+            if panel_y < 10:
+                panel_y = 10
+            self.panel.move(panel_x, panel_y)
+
         self.bubble.raise_()
         if self._open:
             self.panel.raise_()

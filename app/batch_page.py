@@ -355,7 +355,10 @@ class BatchPage(QWidget):
         # via _refresh_preview_mask so the user sees the effect.
         self.inp_mask_dilation = QSpinBox()
         self.inp_mask_dilation.setRange(0, 50)
-        self.inp_mask_dilation.setValue(0)
+        # Default 4 matches the single Inpaint tab's sb_dilation
+        # default. Keeping them in sync means switching between the
+        # two tabs doesn't silently change the mask coverage.
+        self.inp_mask_dilation.setValue(4)
         self.inp_mask_dilation.setSuffix(" px")
         self.inp_mask_dilation.setToolTip(tr("batch_tooltip_mask_dilation"))
         self.inp_mask_dilation.valueChanged.connect(self._refresh_preview_mask)

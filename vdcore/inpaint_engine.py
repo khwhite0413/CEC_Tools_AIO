@@ -9,7 +9,77 @@ from PIL import Image
 from vdcore.config import PROPAINTER_DIR, WEIGHTS_DIR
 
 
+def _patch_propainter_misc():
+    """Rewrite ProPainter's misc.py version-detection regex if it's
+    still the upstream-broken one.
+
+    ProPainter ships an anchored regex (`^...$`) that requires the
+    torch version string to end exactly with an optional pre-release
+    + `+git` tag. Modern PyTorch reports things like `2.6.0+cu124`
+    where the optional groups don't match, returning an empty list;
+    indexing `[0]` then raises IndexError on import:
+
+        File ".../ProPainter/model/misc.py", line 56, in <module>
+            IS_HIGH_VERSION = [int(m) for m in list(re.findall(
+            r"^([0-9]+)\\.([0-9]+)\\.([0-9]+)([^0-9][a-zA-Z0-9]*)?
+            (\\+git.*)?$", torch.__version__))[0][:3]] >= [1, 12, 0]
+        IndexError: list index out of range
+
+    setup.bat downloads ProPainter's main branch as-is so every fresh
+    install hits this. Patch idempotently here at first import — if
+    the buggy marker isn't present, we leave the file alone.
+    """
+    misc_path = os.path.join(PROPAINTER_DIR, "model", "misc.py")
+    if not os.path.isfile(misc_path):
+        return
+    try:
+        with open(misc_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+    except Exception:
+        return
+
+    # Locate the offending assignment. The buggy regex literal is
+    # unique enough to use as a fingerprint.
+    start_idx = None
+    for i, line in enumerate(lines):
+        if line.lstrip().startswith("IS_HIGH_VERSION") and 'r"^([0-9]+)' in line:
+            start_idx = i
+            break
+    if start_idx is None:
+        return  # already patched or a ProPainter variant we don't recognize
+
+    # Walk forward through any line-continuation `\` so we replace the
+    # full logical statement, not just its first physical line.
+    end_idx = start_idx
+    while end_idx < len(lines) and lines[end_idx].rstrip().endswith("\\"):
+        end_idx += 1
+
+    replacement = [
+        "try:\n",
+        "    _ver_match = re.findall("
+        'r"([0-9]+)\\.([0-9]+)\\.([0-9]+)", torch.__version__)\n',
+        "    IS_HIGH_VERSION = (["
+        "int(m) for m in _ver_match[0][:3]] >= [1, 12, 0]) "
+        "if _ver_match else True\n",
+        "except Exception:\n",
+        "    IS_HIGH_VERSION = True\n",
+    ]
+
+    new_lines = lines[:start_idx] + replacement + lines[end_idx + 1:]
+    try:
+        with open(misc_path, "w", encoding="utf-8") as f:
+            f.writelines(new_lines)
+    except Exception:
+        # Best-effort. If the write fails (permissions, antivirus, etc.)
+        # the original import will still error and surface the issue —
+        # better than silently producing wrong results.
+        pass
+
+
 def _add_propainter_path():
+    # Patch before sys.path manipulation so the broken misc.py never
+    # gets imported in its original form.
+    _patch_propainter_misc()
     if PROPAINTER_DIR not in sys.path:
         sys.path.insert(0, PROPAINTER_DIR)
 

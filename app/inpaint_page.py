@@ -76,6 +76,12 @@ class InpaintPage(QWidget):
         self.video_info = None  # (h, w, fps, frame_count)
         self.video_codec = ""    # populated by _set_video via fdcore probe
         self.current_mask = None  # uint8 H x W, full-frame
+        # Name of the preset that produced current_mask. Set in
+        # _apply_preset, cleared when the user draws via the brush
+        # editor or loads a new video. Used by the live mask-dilation /
+        # feather sliders to re-derive the preset mask on the fly so
+        # the A-key overlay reflects the latest values.
+        self._active_preset_name = None
         self.worker = None
         # Distinguishes preview vs full run in _on_finished — preview
         # output lives in cache/ and shouldn't be re-staged.
@@ -253,6 +259,33 @@ class InpaintPage(QWidget):
         lbl_batch = QLabel(tr("inpaint_label_batch_frames"))
         lbl_batch.setToolTip(tr("inpaint_tooltip_batch_frames"))
         basic.addRow(lbl_batch, self.sb_batch_frames)
+
+        # Mask expansion (formerly dev-mode-only). Promoted to the
+        # always-visible block because users routinely need to nudge
+        # this to cover watermark edges. Value applies as a 2D cv2
+        # dilation to the preset mask in _apply_preset, NOT as the
+        # ProPainter-internal scipy dilation — that internal pass is
+        # now zeroed out at worker-submit time to avoid double-dilation.
+        # Range mirrors batch_page (0..50 px). Default 4 was the old
+        # dev-mode default; keeping it preserves existing visual results.
+        self.sb_dilation = QSpinBox()
+        self.sb_dilation.setRange(0, 50)
+        self.sb_dilation.setValue(4)
+        self.sb_dilation.setSuffix(" px")
+        self.sb_dilation.setToolTip(tr("inpaint_tooltip_dilation"))
+        self.sb_dilation.valueChanged.connect(self._on_mask_settings_changed)
+        lbl_dilation = QLabel(tr("inpaint_label_dilation"))
+        lbl_dilation.setToolTip(tr("inpaint_tooltip_dilation"))
+        basic.addRow(lbl_dilation, self.sb_dilation)
+
+        # Feather (also formerly dev-mode-only). Soft edge applied
+        # after the dilation pass.
+        self.chk_feather = QCheckBox(tr("inpaint_feather"))
+        self.chk_feather.setChecked(True)
+        self.chk_feather.setToolTip(tr("inpaint_tooltip_feather"))
+        self.chk_feather.toggled.connect(self._on_mask_settings_changed)
+        basic.addRow("", self.chk_feather)
+
         params_lay.addLayout(basic)
 
         # --- Dev-mode-only rows (hidden by default) ---
@@ -281,9 +314,10 @@ class InpaintPage(QWidget):
         self.chk_fp16.setChecked(True)
         _add_adv_check("inpaint_tooltip_fp16", self.chk_fp16)
 
-        self.chk_feather = QCheckBox(tr("inpaint_feather"))
-        self.chk_feather.setChecked(True)
-        _add_adv_check("inpaint_tooltip_feather", self.chk_feather)
+        # chk_feather and sb_dilation were promoted to the basic block
+        # above. Kept out of the dev section here so there's exactly
+        # one widget instance feeding settings(). Deleting these two
+        # rows is intentional, not an oversight.
 
         self.sb_neighbor = QSpinBox()
         self.sb_neighbor.setRange(2, 30); self.sb_neighbor.setValue(10)
@@ -305,10 +339,7 @@ class InpaintPage(QWidget):
         _add_adv_row("inpaint_label_raft_iter",
                      "inpaint_tooltip_raft_iter", self.sb_raft)
 
-        self.sb_dilation = QSpinBox()
-        self.sb_dilation.setRange(0, 20); self.sb_dilation.setValue(4)
-        _add_adv_row("inpaint_label_dilation",
-                     "inpaint_tooltip_dilation", self.sb_dilation)
+        # sb_dilation moved to the basic block (always visible).
 
         params_lay.addWidget(self._adv_widget)
 
@@ -466,6 +497,7 @@ class InpaintPage(QWidget):
             self._on_format_changed()
         # Stale mask — new video may have different dimensions.
         self.current_mask = None
+        self._active_preset_name = None
         self.mask_status.setText(tr("inpaint_no_mask"))
         self.player.clear_overlay()
         self._log(f"입력 로드: {path}")
@@ -549,6 +581,16 @@ class InpaintPage(QWidget):
             scale_info = (f"비율 다름 ({preset_ar:.3f} → {video_ar:.3f}, "
                           f"{anchor} 정렬)")
 
+        # Mask expansion BEFORE feather so the soft edge wraps the
+        # dilated shape (matches batch tab semantics). Pre-applying
+        # here means the worker's mask_dilation setting is zeroed at
+        # submit time — ProPainter's internal scipy dilation would
+        # otherwise double-expand on top of this.
+        dilation_px = int(self.sb_dilation.value())
+        if dilation_px > 0:
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+            mask = cv2.dilate(mask, kernel, iterations=dilation_px)
+
         if self.chk_feather.isChecked():
             kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
             mask = cv2.dilate(mask, kernel, iterations=1)
@@ -556,6 +598,7 @@ class InpaintPage(QWidget):
             _, mask = cv2.threshold(mask, 10, 255, cv2.THRESH_BINARY)
 
         self.current_mask = mask
+        self._active_preset_name = name
         coverage = float((mask > 127).mean()) * 100.0
         self.mask_status.setText(
             f"{tr('inpaint_mask_set')} — {scale_info} · {coverage:.1f}% "
@@ -565,7 +608,22 @@ class InpaintPage(QWidget):
         # box that used to live next to the preset button.
         self.player.set_overlay_mask(mask)
         feather_str = " +feather" if self.chk_feather.isChecked() else ""
-        self._log(f"프리셋 적용: {name} · {scale_info}{feather_str}")
+        dil_str = f" +dil{dilation_px}" if dilation_px > 0 else ""
+        self._log(f"프리셋 적용: {name} · {scale_info}{feather_str}{dil_str}")
+
+    def _on_mask_settings_changed(self, *_):
+        """Live re-apply when sb_dilation / chk_feather change AND a
+        preset is currently active. Brush-edited masks aren't touched
+        (we shouldn't dilate user-drawn pixels — that's the same
+        convention the batch tab follows). Logs are suppressed to
+        avoid spam while the user drags the spinner."""
+        if self._active_preset_name is None:
+            return
+        # Calling _apply_preset rebuilds current_mask and pushes the new
+        # overlay so the A-key preview reflects the change live. The
+        # mask_status label and log line update too — that's intentional
+        # because the user *did* change a mask-affecting setting.
+        self._apply_preset(self._active_preset_name)
 
     def _toggle_mask_overlay(self):
         if self.current_mask is None:
@@ -624,7 +682,11 @@ class InpaintPage(QWidget):
             "ref_stride":        self.sb_ref_stride.value(),
             "subvideo_length":   self.sb_subvideo.value(),
             "raft_iter":         self.sb_raft.value(),
-            "mask_dilation":     self.sb_dilation.value(),
+            # mask_dilation is intentionally 0 here: the dilation
+            # the user selected via sb_dilation was already baked
+            # into self.current_mask back in _apply_preset. Asking
+            # ProPainter to dilate again would double the effect.
+            "mask_dilation":     0,
             "max_batch_frames":  self.sb_batch_frames.value(),
             "output_format":     fmt,
             "prores_profile":    (self.prores_profile.currentData()
@@ -693,6 +755,11 @@ class InpaintPage(QWidget):
                 "그려진 영역이 없습니다. 마스크가 변경되지 않았습니다.")
             return
         self.current_mask = new_mask
+        # Brush-drawn mask leaves preset-tracking state cleared so the
+        # dilation/feather sliders don't silently overwrite the user's
+        # hand-drawn pixels on the next valueChanged signal. Same
+        # convention as the batch tab.
+        self._active_preset_name = None
         coverage = float((new_mask > 127).mean()) * 100.0
         self.mask_status.setText(
             f"{tr('inpaint_mask_set')} — 브러시 편집 · {coverage:.1f}% "

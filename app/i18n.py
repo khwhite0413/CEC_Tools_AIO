@@ -315,12 +315,16 @@ _STRINGS = {
                "<b>Higher:</b> better motion accuracy, slower<br>"
                "<b>Lower:</b> faster but ghosting / blur risk")},
     "inpaint_tooltip_dilation": {
-        "ko": ("마스크 팽창 픽셀 수 (기본 4).<br>"
+        "ko": ("프리셋 마스크 가장자리를 N 픽셀만큼 외곽으로 확장 (기본 4).<br>"
                "워터마크 가장자리를 살짝 더 가려서 경계 잔상을 줄입니다. "
-               "너무 키우면 인페인트 영역이 커져 품질 ↓."),
-        "en": ("Mask dilation in pixels (default 4).<br>"
-               "Expands the mask slightly to better cover watermark edges. "
-               "Too large = bigger inpaint area = quality ↓.")},
+               "너무 키우면 인페인트 영역이 커져 품질 ↓.<br>"
+               "브러시로 그린 커스텀 마스크에는 영향 없음 — "
+               "그린 그대로 사용됩니다."),
+        "en": ("Expand the preset mask outward by N pixels (default 4).<br>"
+               "Helps cover watermark edges to reduce boundary ghosting. "
+               "Too large = bigger inpaint area = quality ↓.<br>"
+               "No effect on brush-drawn custom masks — those are used "
+               "exactly as drawn.")},
     "tooltip_lang":   {"ko": "언어 변경", "en": "Language"},
     "restart_to_apply": {"ko": "언어 변경: 재시작 후 적용됩니다.",
                          "en": "Language: restart to apply."},

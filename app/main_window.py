@@ -112,7 +112,7 @@ QPushButton:checked {
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("CEC All-In-One v1.0.1")
+        self.setWindowTitle("CEC All-In-One v1.0.2")
         self.resize(1320, 860)
         self.setAcceptDrops(True)
 

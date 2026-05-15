@@ -7,6 +7,13 @@ set "PATH=%ROOT%python;%ROOT%python\Scripts;%ROOT%ffmpeg;%PATH%"
 set "PYTHONHOME="
 set "PYTHONPATH="
 set "HF_HOME=%ROOT%weights\memfof"
+REM Skip every huggingface_hub network call — MEMFOF.from_pretrained
+REM otherwise sends a HEAD request to HF Hub on each load to verify the
+REM cached snapshot, which hangs or rate-limits (429) on slow networks
+REM and froze the batch tab at "0%" on the denoise stage. setup.bat
+REM has already populated the cache; offline-mode just trusts what's
+REM on disk and skips the network round-trip entirely.
+set "HF_HUB_OFFLINE=1"
 
 if "%1"=="launch" goto :run
 

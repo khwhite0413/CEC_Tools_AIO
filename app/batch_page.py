@@ -767,7 +767,15 @@ class BatchPage(QWidget):
             "batch_size": int(self.den_batch.value()),
             "occlusion_threshold": 0.02,
             "cut_threshold": 0.05,
-            "flow_scale": 1.0,
+            # flow_scale matches fdcore DEFAULT_SETTINGS (0.5) so the
+            # batch tab denoise runs at the same MEMFOF resolution the
+            # single denoise tab uses. Forcing 1.0 here would push
+            # MEMFOF to full source resolution — 4x the tensor size,
+            # which appeared as a "hang at 0%" on bs=24 because each
+            # chunk's forward took minutes instead of seconds. The
+            # single tab worked fine with bs=24 because it stayed at
+            # 0.5; only the batch tab carried this inflated value.
+            "flow_scale": 0.5,
             "fp16": True,
             "compute_noise_preview": False,
             "output_format": self.den_codec.codec(),

@@ -36,7 +36,7 @@ SYSTEM_PROMPT = """\
 - 모르는 건 솔직히 모른다고 답하세요.
 - 답변은 간결하게. 필요한 경우 마크다운(굵게/리스트)을 사용해도 됩니다.
 
-# CEC All-In-One v1.0.2 개요
+# CEC All-In-One v1.0.3 개요
 AI 영상 후처리 통합 데스크톱 도구 (PyQt5 기반). 네 가지 작업 탭 + About:
 1. 인페인트 (Inpaint) — ProPainter로 워터마크/객체 제거
 2. 디노이즈 (Denoise) — FlowDenoise로 시간적 광학흐름 기반 노이즈 감소
@@ -217,6 +217,20 @@ A: 네, 편집기 하단에 프레임 슬라이더가 있어요. 슬라이더를
 - 언어 변경: 우측 상단 한국어/English 드롭다운 (변경 후 재시작)
 - 로그 파일: <앱폴더>/logs/cec_aio.log
 - 모델 가중치: <앱폴더>/weights/ (setup.bat이 자동 다운로드)
+
+# 안정성 관련 알아두면 좋은 점 (v1.0.3 기준)
+- 배치 탭 디노이즈 단계는 단일 디노이즈 탭과 정확히 동일한 파라미터(flow_scale,
+  batch_size 등)로 돌아가요. 단일 탭에서 잘 돌던 설정이 배치에서 안 돌면 그건
+  버그니까 알려주세요.
+- 배치에서 단계 사이마다 PyTorch CUDA 캐시를 OS에 반환합니다. 인페인트 →
+  디노이즈 → 업스케일 전환 시 GPU 메모리가 깔끔하게 회수돼서 단편화로 인한
+  hang을 방지해요.
+- MEMFOF 모델 가중치는 첫 setup.bat 실행 시 HuggingFace에서 받아 weights/memfof
+  에 캐시됩니다. 이후 실행은 캐시 활용 + 짧은 HEAD 요청 한 번. 인터넷 안 되면
+  명확한 에러 메시지가 떠요 (조용히 hang 안 함).
+- ffmpeg 인코더가 실패하면 단순 "Broken pipe" 대신 ffmpeg의 마지막 stderr
+  메시지(코덱 / 출력 경로 / 오디오 mux 문제 등)를 함께 표시해서 진짜 원인을
+  바로 알 수 있어요.
 """
 
 
@@ -255,7 +269,7 @@ class ChatWorker(QThread):
                     "Referer":
                         "https://khwhite0413.github.io/idol-prompt-builder/",
                     "User-Agent":
-                        "CEC-AllInOne/1.0.2 (+khwhite0413)",
+                        "CEC-AllInOne/1.0.3 (+khwhite0413)",
                 },
                 method="POST",
             )

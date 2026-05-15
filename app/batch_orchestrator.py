@@ -222,6 +222,17 @@ class BatchOrchestrator(QThread):
         self._errored = False  # set by _run_worker when worker emitted error
         self._current_worker: Optional[QThread] = None
         self._device = None     # set inside _run_inner before any worker
+        # Per-worker scratch state read by the bound-method slots
+        # (_slot_on_progress / _finished / _error / _cancelled). They
+        # live as instance attrs so the slots are pure methods (no
+        # closure capture) — PyQt5 holds a strong ref to bound methods
+        # via __self__, sidestepping the weakref-disconnect that local
+        # lambdas hit on the longer denoise warm-up.
+        self._cur_stage: str = ""
+        self._cur_file_idx: int = 0
+        self._cur_file_total: int = 0
+        self._cur_loop: Optional[QEventLoop] = None
+        self._cur_result: dict = {"error": None, "cancelled": False}
 
     # ------------------------------------------------------------------
     # Public API
@@ -422,6 +433,39 @@ class BatchOrchestrator(QThread):
     # ------------------------------------------------------------------
     # Worker driver
     # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # Bound-method slots for the per-worker QEventLoop. Used to be
+    # local lambdas inside _run_worker; PyQt5 stores connection
+    # receivers via weakref for some non-QObject targets, and the
+    # local lambdas were apparently being garbage-collected between
+    # connect() and the first emit on denoise (which has a longer
+    # warm-up than inpaint due to MEMFOF / RAFT loads, so the gap is
+    # bigger). Bound methods keep a strong ref through their __self__
+    # attribute, so the connection stays live.
+    #
+    # Per-call context (stage / file_idx / file_total / loop / result)
+    # is parked on instance attributes that _run_worker rotates before
+    # connecting.
+    # ------------------------------------------------------------------
+    def _slot_on_progress(self, done: int, total: int) -> None:
+        self.overall_progress.emit(
+            self._cur_stage, self._cur_file_idx, self._cur_file_total,
+            int(done), int(total))
+
+    def _slot_on_finished(self, _path: str) -> None:
+        if self._cur_loop is not None:
+            self._cur_loop.quit()
+
+    def _slot_on_error(self, msg: str) -> None:
+        self._cur_result["error"] = msg
+        if self._cur_loop is not None:
+            self._cur_loop.quit()
+
+    def _slot_on_cancelled(self) -> None:
+        self._cur_result["cancelled"] = True
+        if self._cur_loop is not None:
+            self._cur_loop.quit()
+
     def _run_worker(self, worker: QThread, stage: str, file_idx: int,
                     file_total: int) -> None:
         """Start the worker, block on a local QEventLoop until terminal
@@ -429,28 +473,23 @@ class BatchOrchestrator(QThread):
         state so the outer loop can react.
         """
         self._current_worker = worker
-        result = {"error": None, "cancelled": False}
+        self._cur_stage = stage
+        self._cur_file_idx = file_idx
+        self._cur_file_total = file_total
+        self._cur_result = {"error": None, "cancelled": False}
 
         loop = QEventLoop()
+        self._cur_loop = loop
 
-        def _on_progress(done: int, total: int):
-            self.overall_progress.emit(stage, file_idx, file_total, done, total)
-
-        def _on_finished(_path: str):
-            loop.quit()
-
-        def _on_error(msg: str):
-            result["error"] = msg
-            loop.quit()
-
-        def _on_cancelled():
-            result["cancelled"] = True
-            loop.quit()
-
-        worker.progress.connect(_on_progress, Qt.QueuedConnection)
-        worker.finished_signal.connect(_on_finished, Qt.QueuedConnection)
-        worker.error_signal.connect(_on_error, Qt.QueuedConnection)
-        worker.cancelled_signal.connect(_on_cancelled, Qt.QueuedConnection)
+        # Bound methods keep the receiver alive via __self__ -> self,
+        # which is the orchestrator (still referenced by the caller).
+        # No more chance of a weakref-induced silent disconnect mid-run.
+        worker.progress.connect(self._slot_on_progress, Qt.QueuedConnection)
+        worker.finished_signal.connect(
+            self._slot_on_finished, Qt.QueuedConnection)
+        worker.error_signal.connect(self._slot_on_error, Qt.QueuedConnection)
+        worker.cancelled_signal.connect(
+            self._slot_on_cancelled, Qt.QueuedConnection)
 
         worker.start()
         loop.exec_()
@@ -459,6 +498,8 @@ class BatchOrchestrator(QThread):
         # raises on Windows).
         worker.wait()
         self._current_worker = None
+        self._cur_loop = None
+        result = self._cur_result
 
         # Drop python refs that might still hold the worker's model
         # tensors, then ask PyTorch to return its cached VRAM blocks

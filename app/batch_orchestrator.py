@@ -460,6 +460,25 @@ class BatchOrchestrator(QThread):
         worker.wait()
         self._current_worker = None
 
+        # Drop python refs that might still hold the worker's model
+        # tensors, then ask PyTorch to return its cached VRAM blocks
+        # to the OS. Without this, ProPainter's 3-4 GB cache stays
+        # parked even after the InpaintEngine releases — and 10
+        # consecutive clips followed by MEMFOF + RAFT loading for
+        # denoise tips a 16 GB GPU into the cudaMalloc-thrashing
+        # regime that froze the batch at "0%". Single-tab workflows
+        # never reach this branch (their workers are run directly
+        # from the page, not the orchestrator), so this cleanup is
+        # scoped to batch chains by construction.
+        import gc as _gc
+        _gc.collect()
+        try:
+            import torch as _torch
+            if _torch.cuda.is_available():
+                _torch.cuda.empty_cache()
+        except Exception:
+            pass
+
         if result["error"]:
             # Emit cleanly to the UI; the outer loop sees _errored and
             # returns WITHOUT also emitting cancelled() (which would

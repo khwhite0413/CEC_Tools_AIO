@@ -386,7 +386,7 @@ class BatchPage(QWidget):
         den_lay.addRow(QLabel(tr("batch_label_window") + ":"), self.den_window)
         self.den_batch = QSpinBox()
         self.den_batch.setRange(1, 32)
-        self.den_batch.setValue(4)
+        self.den_batch.setValue(24)
         self.den_batch.setToolTip(tr("batch_tooltip_batch_size"))
         den_lay.addRow(QLabel(tr("batch_label_batch_size") + ":"),
                        self.den_batch)

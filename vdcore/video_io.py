@@ -271,17 +271,76 @@ class FFmpegWriter:
                 output_path,
             ]
 
+        # stderr captured (rather than DEVNULL) so BrokenPipeError on
+        # write() can surface the actual ffmpeg diagnostic — without
+        # this, every encoder-side failure (bad output path, audio mux
+        # error, codec issue, frame-size mismatch) just looked like
+        # "[Errno 32] Broken pipe" with no context.
         self.proc = subprocess.Popen(
             cmd, stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
         )
+        self._cmd = cmd
+
+    def _drain_stderr(self) -> str:
+        """Read whatever ffmpeg has written to stderr by now. Best-effort
+        and non-blocking-ish: we try wait() with a short timeout so the
+        pipe gets fully drained, then read."""
+        try:
+            self.proc.wait(timeout=2)
+        except Exception:
+            try:
+                self.proc.terminate()
+            except Exception:
+                pass
+            try:
+                self.proc.wait(timeout=2)
+            except Exception:
+                pass
+        try:
+            err_bytes = self.proc.stderr.read() if self.proc.stderr else b""
+        except Exception:
+            err_bytes = b""
+        try:
+            return err_bytes.decode("utf-8", errors="replace").strip()
+        except Exception:
+            return ""
 
     def write(self, frame):
-        self.proc.stdin.write(frame.tobytes())
+        try:
+            self.proc.stdin.write(frame.tobytes())
+        except BrokenPipeError:
+            # ffmpeg already exited. Reword the error with whatever it
+            # printed on stderr so the user sees a real diagnostic
+            # instead of a bare "[Errno 32] Broken pipe".
+            err = self._drain_stderr()
+            tail = err[-1200:] if err else "(no stderr captured)"
+            raise RuntimeError(
+                "ffmpeg writer exited before all frames were sent. "
+                "Last stderr output:\n" + tail
+            ) from None
 
     def release(self):
-        self.proc.stdin.close()
-        self.proc.wait(timeout=120)
+        try:
+            self.proc.stdin.close()
+        except Exception:
+            pass
+        try:
+            rc = self.proc.wait(timeout=120)
+        except Exception:
+            rc = None
+        if rc not in (None, 0):
+            err = ""
+            try:
+                err_bytes = self.proc.stderr.read() if self.proc.stderr else b""
+                err = err_bytes.decode("utf-8", errors="replace").strip()
+            except Exception:
+                pass
+            tail = err[-1200:] if err else "(no stderr captured)"
+            raise RuntimeError(
+                f"ffmpeg writer exited with code {rc}. Last stderr "
+                f"output:\n{tail}"
+            )
 
 
 def copy_audio(source_path, video_no_audio_path, output_path):

@@ -89,9 +89,9 @@ _STRINGS = {
                "Lower this (50/100) only when you hit VRAM limits.")},
     "batch_tooltip_batch_size": {
         "ko": ("디노이즈 모델이 한 번에 처리할 프레임 묶음 크기. "
-               "기본 4. VRAM 부족하면 2 또는 1로 줄이세요."),
-        "en": ("Frames per GPU batch for the denoise model. Default 4. "
-               "Reduce to 2 or 1 if you hit VRAM limits.")},
+               "기본 24. VRAM 부족하면 16 / 8 / 4 식으로 줄이세요."),
+        "en": ("Frames per GPU batch for the denoise model. Default 24. "
+               "Reduce to 16 / 8 / 4 if you hit VRAM limits.")},
     "batch_menu_edit_mask":   {"ko": "마스크 편집...",
                                 "en": "Edit mask..."},
     "batch_menu_edit_mask_existing": {

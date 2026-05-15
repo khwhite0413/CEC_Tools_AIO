@@ -81,7 +81,27 @@ class InpaintWorker(QThread):
     def run(self):
         try:
             info = VideoInfo(self.video_path)
-            total_frames = info.frame_count
+            # effective_fps: user override (Dev-mode FPS dropdown) when
+            # positive, otherwise VideoInfo's snapped value (24.04 →
+            # 24.000 etc.). Drives BOTH the reader's -vf fps= and the
+            # writer's -r so the resampled CFR timeline is consistent
+            # across read -> process -> write. Without this matching,
+            # VFR sources lose frames at batch boundaries (the "프레임
+            # 드롭" symptom users hit).
+            fps_override_setting = float(
+                self.settings.get("fps_override", 0.0) or 0.0)
+            effective_fps = (fps_override_setting if fps_override_setting > 0
+                             else info.effective_fps)
+            if not effective_fps or effective_fps <= 0:
+                effective_fps = info.fps or 30.0
+            # Recompute total frame count at the resampled rate so batch
+            # math doesn't overshoot or undershoot the actual yield.
+            # info.frame_count is the container's stsz count at native
+            # fps; ffmpeg with -vf fps= will emit `duration * fps` frames.
+            if info.duration and info.duration > 0:
+                total_frames = int(round(info.duration * effective_fps))
+            else:
+                total_frames = info.frame_count
             if self.frame_cap > 0:
                 total_frames = min(total_frames, self.frame_cap)
 
@@ -106,18 +126,6 @@ class InpaintWorker(QThread):
             else:
                 num_batches = (total_frames + max_batch - 1) // max_batch
 
-            # effective_fps: user override (Dev-mode FPS dropdown) when
-            # positive, otherwise VideoInfo's snapped value (24.04 →
-            # 24.000 etc.). Forwarded to the writer's -r so the encoded
-            # output sits at the chosen rate. color_tags: forwarded so
-            # untagged sources stay untagged on output (matches Nuke
-            # heuristic on both files). output_format: "h264" (mp4) or
-            # "prores" (mov); resolved by the page before the worker
-            # starts.
-            fps_override = float(
-                self.settings.get("fps_override", 0.0) or 0.0)
-            effective_fps = (fps_override if fps_override > 0
-                             else info.effective_fps)
             writer = FFmpegWriter(
                 self.output_path,
                 effective_fps,
@@ -141,7 +149,8 @@ class InpaintWorker(QThread):
                 batch_count = batch_end - batch_start
 
                 frames = read_frames_batch(
-                    self.video_path, batch_start, batch_count)
+                    self.video_path, batch_start, batch_count,
+                    fps=effective_fps)
                 if not frames:
                     break
 

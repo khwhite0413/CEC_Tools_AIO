@@ -110,7 +110,20 @@ class UpscaleWorker(QThread):
     def run(self):
         try:
             info = VideoInfo(self.video_path)
-            total_frames = info.frame_count
+            # See inpaint_worker.run() for the full rationale on why
+            # the reader's -vf fps= and the writer's -r have to be
+            # locked to the same effective_fps. Short version: VFR
+            # sources drop frames at batch boundaries otherwise.
+            fps_override_setting = float(
+                self.settings.get("fps_override", 0.0) or 0.0)
+            effective_fps = (fps_override_setting if fps_override_setting > 0
+                             else info.effective_fps)
+            if not effective_fps or effective_fps <= 0:
+                effective_fps = info.fps or 30.0
+            if info.duration and info.duration > 0:
+                total_frames = int(round(info.duration * effective_fps))
+            else:
+                total_frames = info.frame_count
             if total_frames <= 0:
                 self.error_signal.emit("입력 영상에 프레임이 없습니다.")
                 return
@@ -153,13 +166,6 @@ class UpscaleWorker(QThread):
             post_interp = (cv2.INTER_LANCZOS4
                            if out_w > model_w else cv2.INTER_AREA)
 
-            # User-set fps override (Dev mode → Auto unchecked → drop-
-            # down value) wins over the snapped source fps. 0 = use
-            # whatever VideoInfo.effective_fps reports.
-            fps_override = float(
-                self.settings.get("fps_override", 0.0) or 0.0)
-            effective_fps = (fps_override if fps_override > 0
-                             else info.effective_fps)
             writer = FFmpegWriter(
                 self.output_path,
                 effective_fps,
@@ -183,7 +189,8 @@ class UpscaleWorker(QThread):
                     break
                 bs = b * max_batch
                 be = min(bs + max_batch, total_frames)
-                frames = read_frames_batch(self.video_path, bs, be - bs)
+                frames = read_frames_batch(self.video_path, bs, be - bs,
+                                            fps=effective_fps)
                 if not frames:
                     break
                 for i, f in enumerate(frames):

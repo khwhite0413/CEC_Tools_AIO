@@ -45,21 +45,22 @@ def _get_ffmpeg():
         return "ffmpeg"
 
 
-def read_frames_batch(path, start, count):
+def read_frames_batch(path, start, count, fps=None):
     """Read [start, start+count) frames as BGR uint8 numpy arrays.
 
     Backed by an ffmpeg subprocess that pipes rawvideo bgr24 to stdout.
-    Previously cv2.VideoCapture, which used its own YUV->RGB swscale
-    defaults independent of ffmpeg's. That asymmetry caused colour drift
-    on chained workflows with untagged sources: Denoise wrote via ffmpeg
-    (one default), Upscale then read via cv2 (another default) and wrote
-    via ffmpeg again — net mismatch baked into the pixels of the final
-    file. Routing reads through ffmpeg here keeps the matrix-decision
-    chain end-to-end uniform across the four tabs.
+    Always applies `-vf fps={target}` so the source is read as CFR,
+    matching what fdcore.FFmpegReader does for the denoise path. Same
+    rationale: VFR sources (Seedance 24.04 etc.) report a clean frame
+    count in their container but the per-frame stts deltas drift —
+    without the fps filter, pre-input `-ss` + `-frames:v` can miss
+    frames at batch boundaries. Resampling to CFR makes seek_time
+    arithmetic exact and frame counts predictable.
 
-    Function signature, return shape, and dtype match the old cv2 path
-    exactly so worker code (inpaint / upscale / batch orchestrator) is
-    unchanged.
+    Pass an explicit `fps` (e.g. the snapped effective_fps or the
+    user's override) so reader and writer agree on the timeline.
+    Defaults to the source's native fps when `fps` is None — pure
+    container-rate reads, no retiming.
     """
     if count <= 0:
         return []
@@ -67,15 +68,19 @@ def read_frames_batch(path, start, count):
         info = VideoInfo(path)
     except Exception:
         return []
-    width, height, fps = info.width, info.height, info.fps
+    width, height = info.width, info.height
     if width <= 0 or height <= 0:
         return []
+    target_fps = float(fps) if (fps and fps > 0) else float(info.fps or 0.0)
+    if target_fps <= 0:
+        target_fps = 30.0  # last-resort fallback so seek_time is finite
 
     # Pre-input -ss with -accurate_seek (default on modern ffmpeg) gives
     # us frame-accurate seek + the speed of a keyframe jump on long
-    # clips. Time is computed at the source's native fps so the index
-    # maps to the same physical frame the old cv2 path landed on.
-    seek_time = (start / fps) if fps and fps > 0 else 0.0
+    # clips. seek_time uses the SAME target fps that -vf fps= resamples
+    # to, so batch_start of N in the resampled timeline lands on the
+    # right physical moment.
+    seek_time = start / target_fps
 
     ffmpeg = _get_ffmpeg()
     cmd = [
@@ -83,6 +88,7 @@ def read_frames_batch(path, start, count):
         "-accurate_seek",
         "-ss", f"{seek_time:.6f}",
         "-i", path,
+        "-vf", f"fps={target_fps}",
         "-frames:v", str(int(count)),
         "-f", "rawvideo",
         "-pix_fmt", "bgr24",

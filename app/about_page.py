@@ -151,6 +151,13 @@ _FAQ_INPAINT_KO = [
      "ProPainter가 시간 일관성을 유지하려고 참조하는 이웃 프레임 수와 "
      "간격입니다. 기본값(10 / 10 / 80)에서 결과가 잘 나오면 손대지 마세요. "
      "VRAM 부족하면 subvideo를 60이나 40으로 줄이는 게 가장 효과적이에요."),
+
+    ("인페인트 탭에서도 fps를 강제할 수 있나요?",
+     "네. 우측 파라미터 패널 상단의 「FPS」 라벨에 현재 사용 중인 effective fps "
+     "(자동 스냅된 값)가 항상 표시됩니다. 직접 지정하려면 **개발자 모드** 체크 → "
+     "「FPS Override」 행에서 Auto 체크 해제 → 표준 rate 드롭다운에서 선택. "
+     "리더(-vf fps=)와 라이터(-r) 둘 다에 동일하게 적용되어 출력이 정확히 그 "
+     "fps로 떨어집니다. 디노이즈 / 업스케일 탭도 동일한 UX."),
 ]
 
 _FAQ_INPAINT_EN = [
@@ -189,6 +196,15 @@ _FAQ_INPAINT_EN = [
      "consistency. Default 10 / 10 / 80 works for most cases. If "
      "you hit VRAM limits, lowering subvideo to 60 or 40 is the most "
      "effective single knob."),
+
+    ("Can I force a specific fps on the inpaint output too?",
+     "Yes. The «FPS» readout on the right panel always shows the "
+     "effective fps (auto-snapped from the source). To pick a specific "
+     "rate, toggle **Dev mode** → uncheck Auto on the «FPS Override» "
+     "row → choose one of 23.976 / 24 / 25 / 29.97 / 30 / 50 / 59.94 / "
+     "60. The value drives both the reader's -vf fps= (resampling VFR "
+     "to CFR) and the writer's -r so the output lands exactly on that "
+     "rate. Same UX on the denoise + upscale tabs."),
 ]
 
 

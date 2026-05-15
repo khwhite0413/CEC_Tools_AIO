@@ -19,8 +19,12 @@ from PyQt5.QtCore import QThread, pyqtSignal
 
 # fdcore VideoInfo so the Upscale tab inherits the same untagged-passthrough
 # + non-integer fps snapping (24.04 -> 24.0) the other two tabs use.
-from fdcore.video_io import VideoInfo
-from vdcore.video_io import read_frames_batch, FFmpegWriter
+# Unified writer path: see inpaint_worker.py for the rationale. uint8
+# upscaler output is widened to uint16 via bgr24_to_bgr48le right
+# before each writer.write so the fdcore writer's bgr48le pipe gets
+# the byte count it expects.
+from fdcore.video_io import VideoInfo, FFmpegWriter, bgr24_to_bgr48le
+from vdcore.video_io import read_frames_batch
 
 
 _MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -182,7 +186,7 @@ class UpscaleWorker(QThread):
                     if post_resize:
                         up = cv2.resize(up, (out_w, out_h),
                                         interpolation=post_interp)
-                    writer.write(up)
+                    writer.write(bgr24_to_bgr48le(up))
                     if (i + 1) % 4 == 0:
                         # batch-internal progress so the UI doesn't sit
                         # silent for long batches.

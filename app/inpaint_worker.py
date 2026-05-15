@@ -15,12 +15,15 @@ import cv2
 import numpy as np
 from PyQt5.QtCore import QThread, pyqtSignal
 
-# FlowDenoise's VideoInfo is reused so the Inpaint path inherits its
-# untagged-passthrough + non-integer fps snapping (24.04 → 24.0). Frame
-# reading + writing stays on vdcore (bgr24, simpler — ProPainter is
-# uint8 internally so the fdcore 16-bit pipe would be wasted bandwidth).
-from fdcore.video_io import VideoInfo
-from vdcore.video_io import read_frames_batch, FFmpegWriter
+# All four tabs share fdcore's reader/writer now: VideoInfo for input
+# probing (untagged-passthrough + 24.04 -> 24.0 fps snap), FFmpegWriter
+# for output (bgr48le pipe + colr atom patching + rigorous untagged
+# passthrough). uint8 frames from read_frames_batch get widened to
+# uint16 via bgr24_to_bgr48le right before writing — the upcast is
+# lossless and gives ProPainter / OpenProteus tabs the same color
+# fidelity FlowDenoise has had since v1.0.0.
+from fdcore.video_io import VideoInfo, FFmpegWriter, bgr24_to_bgr48le
+from vdcore.video_io import read_frames_batch
 from vdcore.mask_manager import mask_to_binary
 from vdcore.inpaint_engine import InpaintEngine
 
@@ -178,7 +181,7 @@ class InpaintWorker(QThread):
                     result = frame.copy()
                     if i < len(inpainted):
                         result[y1:y2, x1:x2] = inpainted[i]
-                    writer.write(result)
+                    writer.write(bgr24_to_bgr48le(result))
 
                 processed += batch_count
                 self.progress.emit(processed, total_frames)

@@ -24,7 +24,7 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
 from app.i18n import tr
 from app.video_player import VideoPlayer
 from app.upscale_worker import UpscaleWorker, MODELS, model_available
-from vdcore.video_io import auto_format_from_codec
+from fdcore.video_io import auto_format_from_codec
 
 
 _MODULE_DIR = os.path.dirname(os.path.abspath(__file__))

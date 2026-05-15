@@ -200,7 +200,7 @@ fdcore/                       - 디노이즈 코어 (FlowDenoise v1.0.0 그대�
   video_io.py / color_spaces.py / extract_noise.py / progress.py
 vdcore/                       - 인페인트 코어 (VDInpaint 발췌)
   inpaint_engine.py           - ProPainter 추론 래퍼
-  video_io.py                 - 인페인트/업스케일용 FFmpegWriter (h264/prores)
+  video_io.py                 - ffmpeg 기반 read_frames_batch (네 탭 공용)
   mask_manager.py / model_downloader.py / watermark_detect.py / config.py
 third_party/
   memfof/                     - (선택) MEMFOF 저장소 vendoring — 디노이즈

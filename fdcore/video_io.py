@@ -431,6 +431,39 @@ class VideoInfo:
 _STREAM_COPY_CODECS = frozenset({"h264", "avc1"})
 
 
+def auto_format_from_codec(codec_name):
+    """Pick an output codec that matches the source.
+
+    Used when the user leaves "Auto" selected in the output-format
+    dropdown. ProRes-tagged sources stay on ProRes (preserves quality
+    across multi-step Inpaint -> Denoise -> Upscale chains); everything
+    else gets h264 (ubiquitous, smaller files).
+
+    Lives in fdcore so all three tabs (inpaint / denoise / upscale)
+    can call into the same helper now that the formerly-separate
+    vdcore.FFmpegWriter has been retired.
+    """
+    s = (codec_name or "").lower()
+    if "prores" in s:
+        return "prores"
+    return "h264"
+
+
+def bgr24_to_bgr48le(frame_bgr24):
+    """Expand an 8-bit BGR frame to the 16-bit bgr48le layout that
+    FFmpegWriter feeds ffmpeg.
+
+    Maps each 8-bit value X to ((X << 8) | X), filling the 16-bit
+    range [0, 65535] without skewing — equivalently `X * 257`. Lossless
+    on the way in, so feeding upscale / inpaint outputs (uint8 BGR) into
+    the denoise tab's writer doesn't introduce any rounding bias.
+    """
+    if frame_bgr24.dtype == np.uint16:
+        return frame_bgr24
+    u16 = frame_bgr24.astype(np.uint16)
+    return (u16 << 8) | u16
+
+
 def can_stream_copy(input_path: str, output_format: str) -> bool:
     """Return True iff we can passthrough the source's video stream into
     output_format with `ffmpeg -c copy` (zero decode/encode = bit-exact).

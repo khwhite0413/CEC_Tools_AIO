@@ -25,7 +25,7 @@ from app.video_player import VideoPlayer
 from app.inpaint_worker import InpaintWorker
 from app.mask_editor_dialog import MaskEditorDialog
 from vdcore.config import get_device, weights_available
-from vdcore.video_io import auto_format_from_codec
+from fdcore.video_io import auto_format_from_codec
 
 
 _MODULE_DIR = os.path.dirname(os.path.abspath(__file__))

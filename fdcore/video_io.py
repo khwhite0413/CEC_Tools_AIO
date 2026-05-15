@@ -772,7 +772,13 @@ class FFmpegWriter:
         # RGB→YUV conversion 8 bits of headroom over the 8-bit (yuv420p)
         # or 10-bit (yuv*p10le) output, eliminating the per-channel
         # asymmetric ±1 LSB drift that a bgr24 pipe produced.
-        cmd = [ffmpeg, "-y",
+        # -loglevel error keeps stderr tiny (only actual problems) so
+        # we can capture it via PIPE without risking the buffer-full
+        # deadlock that bit the old vdcore writer. Captured stderr is
+        # surfaced from write() / release() on failure so future
+        # BrokenPipe errors come with a real diagnostic instead of
+        # silently dropping ffmpeg's complaint.
+        cmd = [ffmpeg, "-y", "-loglevel", "error",
                "-f", "rawvideo", "-vcodec", "rawvideo",
                "-pix_fmt", "bgr48le",
                "-s", f"{width}x{height}", "-r", str(fps),
@@ -867,17 +873,69 @@ class FFmpegWriter:
                 ]
         self.proc = subprocess.Popen(
             cmd, stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+
+    def _drain_stderr(self) -> str:
+        """Pull whatever ffmpeg has put on stderr by now."""
+        try:
+            self.proc.wait(timeout=2)
+        except Exception:
+            try:
+                self.proc.terminate()
+            except Exception:
+                pass
+            try:
+                self.proc.wait(timeout=2)
+            except Exception:
+                pass
+        try:
+            err_bytes = (self.proc.stderr.read()
+                         if self.proc.stderr else b"")
+        except Exception:
+            err_bytes = b""
+        try:
+            return err_bytes.decode("utf-8", errors="replace").strip()
+        except Exception:
+            return ""
 
     def write(self, frame_bgr):
-        self.proc.stdin.write(frame_bgr.tobytes())
+        try:
+            self.proc.stdin.write(frame_bgr.tobytes())
+        except BrokenPipeError:
+            # ffmpeg already exited. Surface its stderr tail so we know
+            # WHY — silent BrokenPipeError tells the user nothing and
+            # hides bad codecs / paths / audio mux failures.
+            err = self._drain_stderr()
+            tail = err[-1500:] if err else "(no stderr captured)"
+            raise RuntimeError(
+                "ffmpeg writer exited before all frames were sent. "
+                "Last stderr output:\n" + tail
+            ) from None
 
     def release(self):
         try:
             self.proc.stdin.close()
         except Exception:
             pass
-        self.proc.wait(timeout=300)
+        try:
+            rc = self.proc.wait(timeout=300)
+        except Exception:
+            rc = None
+        # Non-zero exit code with non-empty stderr means ffmpeg failed
+        # the encode even though our stdin pipe was happy. Surface that
+        # before any colr-atom patching attempt would silently no-op.
+        if rc not in (None, 0):
+            try:
+                err_bytes = (self.proc.stderr.read()
+                             if self.proc.stderr else b"")
+                err = err_bytes.decode("utf-8", errors="replace").strip()
+            except Exception:
+                err = ""
+            tail = err[-1500:] if err else "(no stderr captured)"
+            raise RuntimeError(
+                f"ffmpeg writer exited with code {rc}. Last stderr "
+                f"output:\n{tail}"
+            )
         # Patch the colr box after ffmpeg releases the file. ffmpeg leaves
         # primaries / transfer as 'unspecified' inside the container box;
         # we rewrite them from the source tags so Nuke (and any other

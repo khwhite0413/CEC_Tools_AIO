@@ -12,7 +12,8 @@ from app.i18n import tr
 
 
 class PreviewDialog(QDialog):
-    def __init__(self, original_path: str, preview_path: str, parent=None):
+    def __init__(self, original_path: str, preview_path: str, parent=None,
+                 stage_label: str = "디노이즈"):
         super().__init__(parent)
         # Each dialog instance owns its own QMediaPlayer. Without
         # WA_DeleteOnClose Qt keeps the dialog alive as a child of the
@@ -20,7 +21,10 @@ class PreviewDialog(QDialog):
         # via "이전 미리보기 다시 보기" spawns a second player that
         # plays in parallel with the lingering old one.
         self.setAttribute(Qt.WA_DeleteOnClose, True)
-        self.setWindowTitle("미리보기 — 원본 / 디노이즈 (앞 80프레임)")
+        # stage_label lets each tab brand its own preview: "디노이즈",
+        # "인페인트", "업스케일". Used to be hardcoded "디노이즈".
+        self.setWindowTitle(
+            f"미리보기 — 원본 / {stage_label} (앞 80프레임)")
         self.resize(1280, 720)
 
         layout = QVBoxLayout(self)
@@ -28,7 +32,8 @@ class PreviewDialog(QDialog):
         layout.setSpacing(6)
 
         hint = QLabel(
-            "마우스를 화면 위에 올린 뒤 가운데 핸들을 좌우로 끌어 원본/디노이즈를 비교하세요.")
+            "마우스를 화면 위에 올린 뒤 가운데 핸들을 좌우로 끌어 "
+            f"원본/{stage_label}를 비교하세요.")
         hint.setAlignment(Qt.AlignCenter)
         hint.setStyleSheet("color: rgba(180, 184, 200, 200);")
         layout.addWidget(hint)

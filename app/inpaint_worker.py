@@ -106,14 +106,21 @@ class InpaintWorker(QThread):
             else:
                 num_batches = (total_frames + max_batch - 1) // max_batch
 
-            # effective_fps: 24.04-style noisy source → snapped to nearest
-            # standard (24.000). color_tags: forwarded so untagged sources
-            # stay untagged on output (matches Nuke heuristic on both files).
-            # output_format: "h264" (mp4) or "prores" (mov); resolved by the
-            # page before the worker starts.
+            # effective_fps: user override (Dev-mode FPS dropdown) when
+            # positive, otherwise VideoInfo's snapped value (24.04 →
+            # 24.000 etc.). Forwarded to the writer's -r so the encoded
+            # output sits at the chosen rate. color_tags: forwarded so
+            # untagged sources stay untagged on output (matches Nuke
+            # heuristic on both files). output_format: "h264" (mp4) or
+            # "prores" (mov); resolved by the page before the worker
+            # starts.
+            fps_override = float(
+                self.settings.get("fps_override", 0.0) or 0.0)
+            effective_fps = (fps_override if fps_override > 0
+                             else info.effective_fps)
             writer = FFmpegWriter(
                 self.output_path,
-                info.effective_fps,
+                effective_fps,
                 info.width, info.height,
                 source_path=self.video_path,
                 color_tags=info.color_tags(),

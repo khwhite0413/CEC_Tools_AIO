@@ -153,9 +153,16 @@ class UpscaleWorker(QThread):
             post_interp = (cv2.INTER_LANCZOS4
                            if out_w > model_w else cv2.INTER_AREA)
 
+            # User-set fps override (Dev mode → Auto unchecked → drop-
+            # down value) wins over the snapped source fps. 0 = use
+            # whatever VideoInfo.effective_fps reports.
+            fps_override = float(
+                self.settings.get("fps_override", 0.0) or 0.0)
+            effective_fps = (fps_override if fps_override > 0
+                             else info.effective_fps)
             writer = FFmpegWriter(
                 self.output_path,
-                info.effective_fps,
+                effective_fps,
                 out_w, out_h,
                 source_path=self.video_path,
                 color_tags=info.color_tags(),

@@ -27,6 +27,21 @@ from app.upscale_worker import UpscaleWorker, MODELS, model_available
 from fdcore.video_io import auto_format_from_codec
 
 
+# Mirrors fdcore.video_io._STANDARD_FPS so the upscale tab's FPS
+# override drawer offers the exact rates the auto-snap would have
+# chosen. Same list the denoise and inpaint tabs use.
+_STANDARD_FPS_OPTIONS = (
+    (23.976, "23.976"),
+    (24.0, "24"),
+    (25.0, "25"),
+    (29.97, "29.97"),
+    (30.0, "30"),
+    (50.0, "50"),
+    (59.94, "59.94"),
+    (60.0, "60"),
+)
+
+
 _MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.abspath(os.path.join(_MODULE_DIR, ".."))
 _OUTPUT_DIR = os.path.join(_PROJECT_ROOT, "output")
@@ -56,6 +71,8 @@ class UpscalePage(QWidget):
         self._t_start = 0.0
         self._last_done = 0
         self._last_total = 0
+        # Auto-detected snapped fps for the effective_fps_label.
+        self._detected_fps = None
 
         os.makedirs(_OUTPUT_DIR, exist_ok=True)
 
@@ -218,6 +235,13 @@ class UpscalePage(QWidget):
         lbl_batch = QLabel(tr("upscale_label_batch_frames"))
         lbl_batch.setToolTip(tr("upscale_tooltip_batch_frames"))
         basic.addRow(lbl_batch, self.sb_batch_frames)
+
+        # Effective FPS readout — mirrors the denoise + inpaint tabs.
+        self.effective_fps_label = QLabel(tr("fps_unknown"))
+        self.effective_fps_label.setStyleSheet(
+            "color: rgba(200, 205, 220, 220); font-weight: 500;")
+        basic.addRow(tr("label_input_fps"), self.effective_fps_label)
+
         box_lay.addLayout(basic)
 
         # Wrap dev-mode rows in a QWidget so the form's geometry
@@ -240,9 +264,35 @@ class UpscalePage(QWidget):
         self.chk_fp16.setChecked(True)
         _add_adv_check("upscale_tooltip_fp16", self.chk_fp16)
 
+        # FPS override drawer — Auto checkbox + standard-rate dropdown.
+        # Same UX as the denoise + inpaint tabs.
+        fps_row = QWidget()
+        fps_h = QHBoxLayout(fps_row)
+        fps_h.setContentsMargins(0, 0, 0, 0)
+        fps_h.setSpacing(8)
+        self.fps_auto_check = QCheckBox(tr("label_fps_auto"))
+        self.fps_auto_check.setChecked(True)
+        self.fps_auto_check.setToolTip(tr("tooltip_fps_override"))
+        self.fps_override = QComboBox()
+        for value, text in _STANDARD_FPS_OPTIONS:
+            self.fps_override.addItem(text, value)
+        self.fps_override.setCurrentIndex(
+            _STANDARD_FPS_OPTIONS.index((24.0, "24")))
+        self.fps_override.setEnabled(False)
+        self.fps_override.setToolTip(tr("tooltip_fps_override"))
+        fps_h.addWidget(self.fps_auto_check)
+        fps_h.addWidget(self.fps_override, 1)
+        adv.addRow(tr("label_fps_override"), fps_row)
+        self.fps_auto_check.toggled.connect(
+            lambda checked: self.fps_override.setEnabled(not checked))
+        self.fps_auto_check.toggled.connect(self._refresh_effective_fps_label)
+        self.fps_override.currentIndexChanged.connect(
+            self._refresh_effective_fps_label)
+
         box_lay.addWidget(self._adv_widget)
 
         self.dev_mode.toggled.connect(self._apply_dev_mode)
+        self.dev_mode.toggled.connect(self._refresh_effective_fps_label)
         self._apply_dev_mode(False)
 
         # Plain QGroupBox — same reason as params box above.
@@ -339,6 +389,25 @@ class UpscalePage(QWidget):
         self._adv_widget.setVisible(on)
 
     # ------------------------------------------------------------------
+    # FPS override / display — mirrors the denoise tab's parameter panel.
+    # ------------------------------------------------------------------
+    def set_input_fps(self, fps) -> None:
+        self._detected_fps = (
+            float(fps) if (fps is not None and fps > 0) else None)
+        self._refresh_effective_fps_label()
+
+    def _refresh_effective_fps_label(self) -> None:
+        if self._detected_fps is None:
+            self.effective_fps_label.setText(tr("fps_unknown"))
+            return
+        if (self.dev_mode.isChecked()
+                and not self.fps_auto_check.isChecked()):
+            val = float(self.fps_override.currentData())
+            self.effective_fps_label.setText(f"{val:.3f}")
+        else:
+            self.effective_fps_label.setText(f"{self._detected_fps:.3f}")
+
+    # ------------------------------------------------------------------
     # File picking
     # ------------------------------------------------------------------
     def _pick_file(self):
@@ -367,11 +436,16 @@ class UpscalePage(QWidget):
 
         self.video_info = (h, w, fps, fc)
         # Light codec probe so "Auto" format picks the right codec to
-        # avoid h264 re-compression in chained workflows.
+        # avoid h264 re-compression in chained workflows. Also pull the
+        # snapped effective fps so the FPS readout matches what the
+        # writer will actually emit.
         self.video_codec = ""
+        effective_fps = fps
         try:
             from fdcore.video_io import VideoInfo as _FdInfo
-            self.video_codec = (_FdInfo(path).codec_name or "").lower()
+            _fd = _FdInfo(path)
+            self.video_codec = (_fd.codec_name or "").lower()
+            effective_fps = getattr(_fd, "effective_fps", fps)
         except Exception:
             pass
         try:
@@ -387,6 +461,7 @@ class UpscalePage(QWidget):
         if hasattr(self, "format_combo"):
             self._on_format_changed()
         self._refresh_res_preview()
+        self.set_input_fps(effective_fps)
         self._log(f"입력 로드: {path}")
 
     def _browse_output(self):
@@ -501,6 +576,13 @@ class UpscalePage(QWidget):
             "output_format":     fmt,
             "prores_profile":    (self.prores_profile.currentData()
                                   or "4444"),
+            # fps_override only takes effect when Dev mode is on AND
+            # the Auto checkbox is unchecked. 0 = auto (worker falls
+            # back to info.effective_fps).
+            "fps_override": (float(self.fps_override.currentData())
+                             if (self.dev_mode.isChecked()
+                                 and not self.fps_auto_check.isChecked())
+                             else 0.0),
         }
         device = (torch.device("cuda") if torch.cuda.is_available()
                   else torch.device("cpu"))

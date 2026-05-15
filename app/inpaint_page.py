@@ -24,8 +24,24 @@ from app.i18n import tr
 from app.video_player import VideoPlayer
 from app.inpaint_worker import InpaintWorker
 from app.mask_editor_dialog import MaskEditorDialog
+from app.preview_dialog import PreviewDialog
 from vdcore.config import get_device, weights_available
 from fdcore.video_io import auto_format_from_codec
+
+
+# Mirrors fdcore.video_io._STANDARD_FPS so the inpaint tab's FPS
+# override drawer offers the exact rates the auto-snap would have
+# chosen. Same list the denoise tab uses.
+_STANDARD_FPS_OPTIONS = (
+    (23.976, "23.976"),
+    (24.0, "24"),
+    (25.0, "25"),
+    (29.97, "29.97"),
+    (30.0, "30"),
+    (50.0, "50"),
+    (59.94, "59.94"),
+    (60.0, "60"),
+)
 
 
 _MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -82,6 +98,14 @@ class InpaintPage(QWidget):
         # slider to re-derive the preset mask on the fly so the A-key
         # overlay reflects the latest value.
         self._active_preset_name = None
+        # Auto-detected source fps (raw VideoInfo.fps, pre-snap).
+        # Drives the effective_fps_label readout. Set on _set_video.
+        self._detected_fps = None
+        # Last preview run output + the input it came from. Used by
+        # "이전 미리보기 다시 보기" to reopen the modal PreviewDialog
+        # without re-running the worker.
+        self._last_preview_path = None
+        self._last_preview_source = None
         self.worker = None
         # Distinguishes preview vs full run in _on_finished — preview
         # output lives in cache/ and shouldn't be re-staged.
@@ -174,6 +198,11 @@ class InpaintPage(QWidget):
         btn_row = QHBoxLayout()
         self.btn_preview = QPushButton(tr("btn_preview"))
         self.btn_preview.clicked.connect(lambda: self._run(preview=True))
+        # Re-open the last preview dialog without re-running the worker
+        # (same UX as the denoise tab).
+        self.btn_show_preview = QPushButton(tr("btn_show_preview"))
+        self.btn_show_preview.clicked.connect(self._show_last_preview)
+        self.btn_show_preview.setEnabled(False)
         self.btn_run = QPushButton(tr("btn_run"))
         self.btn_run.setStyleSheet("font-weight: bold;")
         self.btn_run.clicked.connect(self._run)
@@ -181,6 +210,7 @@ class InpaintPage(QWidget):
         self.btn_cancel.clicked.connect(self._cancel)
         self.btn_cancel.setEnabled(False)
         btn_row.addWidget(self.btn_preview)
+        btn_row.addWidget(self.btn_show_preview)
         btn_row.addWidget(self.btn_run)
         btn_row.addWidget(self.btn_cancel)
         lay.addLayout(btn_row)
@@ -278,6 +308,14 @@ class InpaintPage(QWidget):
         lbl_dilation.setToolTip(tr("inpaint_tooltip_dilation"))
         basic.addRow(lbl_dilation, self.sb_dilation)
 
+        # Effective FPS readout — mirrors the denoise tab's same-named
+        # label. Always visible; reflects auto-snapped source fps when
+        # Dev mode + Auto is on, or the override value otherwise.
+        self.effective_fps_label = QLabel(tr("fps_unknown"))
+        self.effective_fps_label.setStyleSheet(
+            "color: rgba(200, 205, 220, 220); font-weight: 500;")
+        basic.addRow(tr("label_input_fps"), self.effective_fps_label)
+
         params_lay.addLayout(basic)
 
         # --- Dev-mode-only rows (hidden by default) ---
@@ -334,12 +372,40 @@ class InpaintPage(QWidget):
         _add_adv_row("inpaint_label_raft_iter",
                      "inpaint_tooltip_raft_iter", self.sb_raft)
 
+        # FPS override drawer — same Auto checkbox + dropdown pattern as
+        # the denoise tab. Forwarded to the writer's -r so AI sources
+        # tagged at weird rates (24.04 etc.) can be locked to a clean
+        # standard rate without changing the actual frame timing.
+        fps_row = QWidget()
+        fps_h = QHBoxLayout(fps_row)
+        fps_h.setContentsMargins(0, 0, 0, 0)
+        fps_h.setSpacing(8)
+        self.fps_auto_check = QCheckBox(tr("label_fps_auto"))
+        self.fps_auto_check.setChecked(True)
+        self.fps_auto_check.setToolTip(tr("tooltip_fps_override"))
+        self.fps_override = QComboBox()
+        for value, text in _STANDARD_FPS_OPTIONS:
+            self.fps_override.addItem(text, value)
+        self.fps_override.setCurrentIndex(
+            _STANDARD_FPS_OPTIONS.index((24.0, "24")))
+        self.fps_override.setEnabled(False)
+        self.fps_override.setToolTip(tr("tooltip_fps_override"))
+        fps_h.addWidget(self.fps_auto_check)
+        fps_h.addWidget(self.fps_override, 1)
+        adv.addRow(tr("label_fps_override"), fps_row)
+        self.fps_auto_check.toggled.connect(
+            lambda checked: self.fps_override.setEnabled(not checked))
+        self.fps_auto_check.toggled.connect(self._refresh_effective_fps_label)
+        self.fps_override.currentIndexChanged.connect(
+            self._refresh_effective_fps_label)
+
         # sb_dilation moved to the basic block (always visible).
 
         params_lay.addWidget(self._adv_widget)
 
         # Wire & hide-by-default. Same pattern as the denoise tab.
         self.dev_mode.toggled.connect(self._apply_dev_mode)
+        self.dev_mode.toggled.connect(self._refresh_effective_fps_label)
         self._apply_dev_mode(False)
 
         # Plain QGroupBox — same reason as params_box above.
@@ -441,6 +507,29 @@ class InpaintPage(QWidget):
         self._adv_widget.setVisible(on)
 
     # ------------------------------------------------------------------
+    # FPS override / display — mirrors the denoise tab's parameter panel.
+    # ------------------------------------------------------------------
+    def set_input_fps(self, fps) -> None:
+        """Cache the auto-detected snapped fps and redraw the readout."""
+        self._detected_fps = (
+            float(fps) if (fps is not None and fps > 0) else None)
+        self._refresh_effective_fps_label()
+
+    def _refresh_effective_fps_label(self) -> None:
+        """Update the effective-fps readout based on current state.
+        Reflects the override value only when Dev mode is on AND Auto
+        is unchecked — otherwise the auto-detected snapped value."""
+        if self._detected_fps is None:
+            self.effective_fps_label.setText(tr("fps_unknown"))
+            return
+        if (self.dev_mode.isChecked()
+                and not self.fps_auto_check.isChecked()):
+            val = float(self.fps_override.currentData())
+            self.effective_fps_label.setText(f"{val:.3f}")
+        else:
+            self.effective_fps_label.setText(f"{self._detected_fps:.3f}")
+
+    # ------------------------------------------------------------------
     # File / input handling
     # ------------------------------------------------------------------
     def _pick_file(self):
@@ -470,10 +559,16 @@ class InpaintPage(QWidget):
         self.video_info = (h, w, fps, fc)
         # Light codec probe so "Auto" format picks the right codec
         # without re-encoding more than necessary in chained workflows.
+        # Also pull the SNAPPED effective fps (24.04 -> 24.0 etc.) so
+        # the effective_fps_label shows the value the writer will
+        # actually emit, not the raw container metadata.
         self.video_codec = ""
+        effective_fps = fps
         try:
             from fdcore.video_io import VideoInfo as _FdInfo
-            self.video_codec = (_FdInfo(path).codec_name or "").lower()
+            _fd = _FdInfo(path)
+            self.video_codec = (_fd.codec_name or "").lower()
+            effective_fps = getattr(_fd, "effective_fps", fps)
         except Exception:
             pass
         try:
@@ -495,6 +590,15 @@ class InpaintPage(QWidget):
         self._active_preset_name = None
         self.mask_status.setText(tr("inpaint_no_mask"))
         self.player.clear_overlay()
+        # Refresh the effective-FPS readout. self._detected_fps stores
+        # the snapped value so the label tracks what the writer will
+        # actually use; the dev-mode override (when on) replaces it.
+        self.set_input_fps(effective_fps)
+        # Drop any cached preview reference — it belongs to the prior input.
+        self._last_preview_path = None
+        self._last_preview_source = None
+        if hasattr(self, "btn_show_preview"):
+            self.btn_show_preview.setEnabled(False)
         self._log(f"입력 로드: {path}")
 
     def _browse_output(self):
@@ -677,6 +781,13 @@ class InpaintPage(QWidget):
             "output_format":     fmt,
             "prores_profile":    (self.prores_profile.currentData()
                                   or "4444"),
+            # fps_override only takes effect when Dev mode is on AND
+            # the Auto checkbox is unchecked. 0 = auto (worker falls
+            # back to info.effective_fps).
+            "fps_override": (float(self.fps_override.currentData())
+                             if (self.dev_mode.isChecked()
+                                 and not self.fps_auto_check.isChecked())
+                             else 0.0),
         }
         device = get_device()
         kind = f"미리보기 (앞 {PREVIEW_FRAMES}프레임)" if preview else "처리 시작"
@@ -713,6 +824,11 @@ class InpaintPage(QWidget):
     def _set_running(self, running: bool):
         self.btn_run.setEnabled(not running)
         self.btn_preview.setEnabled(not running)
+        # btn_show_preview stays disabled while running; flips back
+        # when finished only if a preview output is available.
+        self.btn_show_preview.setEnabled(
+            (not running) and bool(self._last_preview_path)
+            and os.path.exists(self._last_preview_path or ""))
         self.btn_cancel.setEnabled(running)
         self.preset_btn.setEnabled(not running)
         self.btn_edit_mask.setEnabled(not running)
@@ -790,24 +906,47 @@ class InpaintPage(QWidget):
         was_preview = self._is_preview
         self._is_preview = False
         self.worker = None
-        if output_path and os.path.exists(output_path):
-            try:
-                if was_preview:
-                    # Preview output is already in cache/; load it
-                    # directly so we don't re-copy and possibly overwrite
-                    # an existing full-run viewer stage.
-                    viewer_path = output_path
-                else:
-                    # Full run — stage a viewer-only copy in cache/ so
-                    # the real deliverable in output/ stays writable
-                    # while the player keeps its cv2 handle.
-                    viewer_path = self._stage_for_viewer(output_path)
-                self.player.disable_compare()
-                self.player.load(viewer_path)
-                if self.video_path and os.path.exists(self.video_path):
-                    self.player.enable_compare(self.video_path)
-            except Exception as e:
-                self._log(f"[WARN] 결과 미리보기 전환 실패: {e}")
+        if not output_path or not os.path.exists(output_path):
+            return
+        if was_preview:
+            # Preview run — same UX as the denoise tab: open a modal
+            # PreviewDialog with the source as the wipe "before" and
+            # the inpaint output as "after". The main viewer is left
+            # untouched so the user can keep scrubbing the source
+            # while comparing in the dialog.
+            self._last_preview_path = output_path
+            self._last_preview_source = self.video_path
+            self.btn_show_preview.setEnabled(True)
+            dlg = PreviewDialog(self.video_path, output_path,
+                                self, stage_label="인페인트")
+            dlg.exec_()
+            return
+        # Full run — stage a viewer-only copy in cache/ so the real
+        # deliverable in output/ stays writable while the player keeps
+        # its cv2 handle.
+        try:
+            viewer_path = self._stage_for_viewer(output_path)
+            self.player.disable_compare()
+            self.player.load(viewer_path)
+            if self.video_path and os.path.exists(self.video_path):
+                self.player.enable_compare(self.video_path)
+            self._log("메인 뷰어가 결과물로 전환됨 (와이프로 원본 비교 가능).")
+        except Exception as e:
+            self._log(f"[WARN] 결과 미리보기 전환 실패: {e}")
+
+    def _show_last_preview(self):
+        path = self._last_preview_path
+        source = self._last_preview_source or self.video_path
+        if not path or not os.path.exists(path):
+            self.btn_show_preview.setEnabled(False)
+            self._last_preview_path = None
+            self._last_preview_source = None
+            QMessageBox.information(
+                self, "Inpaint",
+                "미리보기 파일을 찾을 수 없습니다. 다시 생성해 주세요.")
+            return
+        dlg = PreviewDialog(source, path, self, stage_label="인페인트")
+        dlg.exec_()
 
     @staticmethod
     def _stage_for_viewer(output_path: str) -> str:

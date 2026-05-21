@@ -15,6 +15,7 @@ from PyQt5.QtWidgets import (QDialog, QWidget, QVBoxLayout, QHBoxLayout,
                               QDialogButtonBox, QSizePolicy)
 
 from app.i18n import tr
+from app.viewport_controller import ViewportController
 
 
 class MaskCanvas(QWidget):
@@ -61,6 +62,15 @@ class MaskCanvas(QWidget):
 
         self._undo_stack = []
         self._max_undo = 20
+
+        # Nuke-style wheel zoom / middle-drag pan / F reset. All
+        # internal mouse-derived state (cursor_pos, rect_start,
+        # last_point, etc.) is stored in *base* widget coords — the
+        # view-space pos that arrives in mouse events is fed through
+        # `_viewport.map_from_view` first so the rest of the canvas
+        # logic stays oblivious to the zoom layer.
+        self._viewport = ViewportController(self)
+        self._viewport.transform_changed.connect(self.update)
 
     # ------------------------------------------------------------------
     # External API
@@ -166,26 +176,32 @@ class MaskCanvas(QWidget):
             return
         self._save_undo()
         self._drawing = True
+        # Undo the viewport zoom/pan so the rest of this method
+        # operates in the same base-widget space `_widget_to_video`
+        # expects. Without this, painting at high zoom would land far
+        # from where the user's brush is visible.
+        base_pt = self._viewport.map_from_view(e.pos()).toPoint()
         if self.tool in (self.TOOL_RECT, self.TOOL_ELLIPSE):
-            self._rect_start = e.pos()
-            self._rect_current = e.pos()
+            self._rect_start = base_pt
+            self._rect_current = base_pt
         else:
-            vx, vy = self._widget_to_video(e.x(), e.y())
+            vx, vy = self._widget_to_video(base_pt.x(), base_pt.y())
             self._last_point = (vx, vy)
             self._paint_circle(vx, vy)
             self.mask_updated.emit()
         self.update()
 
     def mouseMoveEvent(self, e):
-        self._cursor_pos = e.pos()
+        base_pt = self._viewport.map_from_view(e.pos()).toPoint()
+        self._cursor_pos = base_pt
         if not self._drawing:
             self.update()
             return
         if self.tool in (self.TOOL_RECT, self.TOOL_ELLIPSE):
-            self._rect_current = e.pos()
+            self._rect_current = base_pt
             self.update()
         else:
-            vx, vy = self._widget_to_video(e.x(), e.y())
+            vx, vy = self._widget_to_video(base_pt.x(), base_pt.y())
             if self._last_point:
                 self._paint_line(self._last_point[0], self._last_point[1],
                                   vx, vy)
@@ -281,6 +297,12 @@ class MaskCanvas(QWidget):
         painter = QPainter(self)
         painter.fillRect(self.rect(), QColor(16, 16, 24))
 
+        # All content below lives in *base* widget coords; the viewport
+        # transform zooms/pans the whole stack — bg, mask overlay,
+        # rect/ellipse preview, and the brush hover circle — together.
+        painter.save()
+        painter.setTransform(self._viewport.transform(), True)
+
         if self._bg_pixmap and not self._bg_pixmap.isNull():
             painter.drawPixmap(self._display_rect, self._bg_pixmap)
 
@@ -306,7 +328,11 @@ class MaskCanvas(QWidget):
         if (self._drawing
                 and self.tool in (self.TOOL_RECT, self.TOOL_ELLIPSE)
                 and self._rect_start and self._rect_current):
-            painter.setPen(QPen(QColor(255, 220, 80), 2, Qt.DashLine))
+            # Cosmetic pen keeps the dashed outline at a sensible
+            # ~2px regardless of zoom.
+            pen = QPen(QColor(255, 220, 80), 2, Qt.DashLine)
+            pen.setCosmetic(True)
+            painter.setPen(pen)
             painter.setBrush(QBrush(QColor(255, 220, 80, 50)))
             r = QRect(self._rect_start, self._rect_current).normalized()
             if self.tool == self.TOOL_RECT:
@@ -314,16 +340,21 @@ class MaskCanvas(QWidget):
             else:
                 painter.drawEllipse(r)
 
-        # Brush hover cursor
+        # Brush hover cursor — radius uses the base display scale only;
+        # the viewport zoom scales the circle automatically. Pen is
+        # cosmetic so the outline stays 1px on screen at any zoom.
         if (self.tool in (self.TOOL_BRUSH, self.TOOL_ERASER)
                 and self._cursor_pos is not None):
             r_widget = int(self.brush_size * self._scale)
             color = (QColor(80, 200, 255) if self.tool == self.TOOL_BRUSH
                      else QColor(255, 180, 80))
-            painter.setPen(QPen(color, 1, Qt.SolidLine))
+            pen = QPen(color, 1, Qt.SolidLine)
+            pen.setCosmetic(True)
+            painter.setPen(pen)
             painter.setBrush(Qt.NoBrush)
             painter.drawEllipse(self._cursor_pos, r_widget, r_widget)
 
+        painter.restore()
         painter.end()
 
 

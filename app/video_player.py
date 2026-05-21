@@ -5,7 +5,7 @@ import shutil
 
 import cv2
 import numpy as np
-from PyQt5.QtCore import Qt, QTimer, QRect, QUrl, pyqtSignal
+from PyQt5.QtCore import Qt, QTimer, QRect, QRectF, QUrl, pyqtSignal
 from PyQt5.QtGui import QImage, QPixmap, QPainter, QColor, QPen
 from PyQt5.QtMultimedia import (QMediaPlayer, QMediaContent,
                                  QAbstractVideoSurface, QVideoFrame)
@@ -16,6 +16,7 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
 from fdcore.video_io import (VideoInfo, ImageSequenceInfo, is_image_sequence,
                               probe as _probe_video)
 from app.i18n import tr
+from app.viewport_controller import ViewportController
 
 
 def _fmt_time(seconds: float) -> str:
@@ -72,6 +73,13 @@ class _FrameLabel(QLabel):
         self._wipe_pos = 0.0
         self._dragging_wipe = False
         self._hover = False
+        # Full-resolution pixmap retained so wheel-zoom can scale up
+        # past the widget's native render size without resampling
+        # artefacts. QLabel's own pixmap path is bypassed in paintEvent
+        # when this is non-null — see paintEvent below.
+        self._orig_pixmap = None
+        self._viewport = ViewportController(self)
+        self._viewport.transform_changed.connect(self.update)
 
     def show_bgr(self, frame):
         self._current = frame
@@ -79,8 +87,10 @@ class _FrameLabel(QLabel):
 
     def clear_image(self):
         self._current = None
+        self._orig_pixmap = None
         self.setPixmap(QPixmap())
         self.setText(tr("video_placeholder"))
+        self.update()
 
     # --- wipe overlay -------------------------------------------------
     def set_wipe_enabled(self, on: bool):
@@ -145,64 +155,115 @@ class _FrameLabel(QLabel):
             p = p.parent()
 
     def _pixmap_geometry(self) -> QRect:
-        pix = self.pixmap()
+        """Base aspect-fit rect (zoom=1, pan=0) for the current pixmap.
+
+        Viewport transform is applied on top of this in paintEvent — see
+        `_pixmap_geometry_view` if you need the post-zoom rect (e.g.
+        wipe overlay needs to track the *visible* image, not the base).
+        """
+        pix = self._orig_pixmap
         if pix is None or pix.isNull():
             return self.rect()
-        lw, lh = self.width(), self.height()
         pw, ph = pix.width(), pix.height()
-        return QRect((lw - pw) // 2, (lh - ph) // 2, pw, ph)
+        ww, wh = self.width(), self.height()
+        if pw <= 0 or ph <= 0 or ww <= 0 or wh <= 0:
+            return self.rect()
+        scale = min(ww / pw, wh / ph)
+        dw, dh = int(pw * scale), int(ph * scale)
+        ox = (ww - dw) // 2
+        oy = (wh - dh) // 2
+        return QRect(ox, oy, dw, dh)
+
+    def _pixmap_geometry_view(self) -> QRectF:
+        """Pixmap rect in widget pixel space *after* the viewport
+        transform. Used to position UI overlays (wipe line) on top of
+        the zoomed image."""
+        return self._viewport.transform().mapRect(QRectF(self._pixmap_geometry()))
 
     def _set_wipe_from_x(self, mx: int):
-        rect = self._pixmap_geometry()
-        if rect.width() <= 0:
+        # Wipe position is normalised to the image's *visible* rect so
+        # the line tracks where the user actually sees the image at any
+        # zoom level. Pure widget x would drift when zoomed/panned.
+        trect = self._pixmap_geometry_view()
+        if trect.width() <= 0:
             return
-        local_x = mx - rect.left()
-        pos = max(0.0, min(1.0, local_x / rect.width()))
+        local_x = mx - trect.left()
+        pos = max(0.0, min(1.0, local_x / trect.width()))
         if pos != self._wipe_pos:
             self._wipe_pos = pos
             self.wipe_changed.emit(pos)
             self.update()
 
     def paintEvent(self, e):
-        super().paintEvent(e)
+        # No frame loaded: let QLabel handle the placeholder text + the
+        # stylesheet-driven background fill the same way it always did.
+        if self._orig_pixmap is None or self._orig_pixmap.isNull():
+            super().paintEvent(e)
+            return
+
+        painter = QPainter(self)
+        # We bypass super().paintEvent in the image case, so the
+        # stylesheet background isn't painted automatically. Repaint
+        # it manually with the same colour the CSS uses.
+        painter.fillRect(self.rect(), QColor(0x18, 0x18, 0x1f))
+
+        base = self._pixmap_geometry()
+        painter.save()
+        painter.setTransform(self._viewport.transform(), True)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        painter.drawPixmap(base, self._orig_pixmap)
+        painter.restore()
+
         if not self._wipe_enabled:
+            painter.end()
             return
-        # Show the line subtly when hovering, fade out otherwise unless the
-        # user has actually moved the wipe away from "all after".
-        active = self._hover or self._dragging_wipe or self._wipe_pos > 0.001
+        active = (self._hover or self._dragging_wipe
+                  or self._wipe_pos > 0.001)
         if not active:
+            painter.end()
             return
-        rect = self._pixmap_geometry()
-        if rect.width() <= 0:
+        # Wipe overlay sits in widget pixel space (so the line stays
+        # 1.5px wide and the handle stays 6×36 regardless of zoom),
+        # but it uses the zoomed rect for positioning so it tracks the
+        # visible image edges.
+        trect = self._pixmap_geometry_view()
+        if trect.width() <= 0:
+            painter.end()
             return
-        line_x = rect.left() + int(self._wipe_pos * rect.width())
+        line_x = int(trect.left() + self._wipe_pos * trect.width())
         line_alpha = 200 if self._dragging_wipe else (140 if self._hover else 70)
         handle_alpha = 230 if self._dragging_wipe else (180 if self._hover else 110)
-        painter = QPainter(self)
-        try:
-            painter.setRenderHint(QPainter.Antialiasing, True)
-            painter.setPen(QPen(QColor(255, 255, 255, line_alpha), 1.5))
-            painter.drawLine(line_x, rect.top(), line_x, rect.bottom())
-            cy = (rect.top() + rect.bottom()) // 2
-            painter.setPen(Qt.NoPen)
-            painter.setBrush(QColor(255, 255, 255, handle_alpha))
-            painter.drawRoundedRect(line_x - 3, cy - 18, 6, 36, 3, 3)
-        finally:
-            painter.end()
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setPen(QPen(QColor(255, 255, 255, line_alpha), 1.5))
+        painter.drawLine(line_x, int(trect.top()),
+                         line_x, int(trect.bottom()))
+        cy = int((trect.top() + trect.bottom()) // 2)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(255, 255, 255, handle_alpha))
+        painter.drawRoundedRect(line_x - 3, cy - 18, 6, 36, 3, 3)
+        painter.end()
 
     def _refresh(self):
         if self._current is None:
             return
         rgb = cv2.cvtColor(self._current, cv2.COLOR_BGR2RGB)
         h, w, _ = rgb.shape
-        qimg = QImage(rgb.data, w, h, w * 3, QImage.Format_RGB888)
-        pix = QPixmap.fromImage(qimg).scaled(
-            self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        self.setPixmap(pix)
+        # .copy() detaches the QImage from the numpy buffer so the
+        # pixmap survives later cv2 writes to self._current.
+        qimg = QImage(rgb.data, w, h, w * 3, QImage.Format_RGB888).copy()
+        self._orig_pixmap = QPixmap.fromImage(qimg)
+        # QLabel's own pixmap path is left empty — paintEvent uses
+        # `_orig_pixmap` directly so zoom can scale past widget size.
+        # Also clear the placeholder text so it doesn't render under
+        # the image while a frame is loaded.
+        self.setText("")
+        self.update()
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
-        self._refresh()
+        # No pre-scaling needed anymore — paintEvent re-aspect-fits on
+        # every paint. Just repaint to pick up the new widget size.
+        self.update()
 
 
 class VideoPlayer(QWidget):
@@ -616,6 +677,17 @@ class VideoPlayer(QWidget):
 
     # --- keyboard ------------------------------------------------------
     def keyPressEvent(self, e):
+        # F resets the viewer's pan/zoom. _FrameLabel forwards keyboard
+        # focus up to this widget (see _focus_player), so the viewport
+        # controller's own F handler never fires for this viewer — we
+        # intercept it here and call reset() on the frame view directly.
+        if e.key() == Qt.Key_F:
+            try:
+                self.frame_view._viewport.reset()
+            except AttributeError:
+                pass
+            e.accept()
+            return
         if self.video_path and self.video_info:
             if e.key() == Qt.Key_Left:
                 self.step(-1)

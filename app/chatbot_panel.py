@@ -36,7 +36,7 @@ SYSTEM_PROMPT = """\
 - 모르는 건 솔직히 모른다고 답하세요.
 - 답변은 간결하게. 필요한 경우 마크다운(굵게/리스트)을 사용해도 됩니다.
 
-# CEC All-In-One v1.0.3 개요
+# CEC All-In-One v1.0.4 개요
 AI 영상 후처리 통합 데스크톱 도구 (PyQt5 기반). 네 가지 작업 탭 + About:
 1. 인페인트 (Inpaint) — ProPainter로 워터마크/객체 제거
 2. 디노이즈 (Denoise) — FlowDenoise로 시간적 광학흐름 기반 노이즈 감소
@@ -218,7 +218,25 @@ A: 네, 편집기 하단에 프레임 슬라이더가 있어요. 슬라이더를
 - 로그 파일: <앱폴더>/logs/cec_aio.log
 - 모델 가중치: <앱폴더>/weights/ (setup.bat이 자동 다운로드)
 
-# 안정성 관련 알아두면 좋은 점 (v1.0.3 기준)
+# v1.0.4에서 추가된 기능
+- **모든 뷰어에 누크 스타일 줌/팬** — 디노이즈/인페인트/업스케일/배치 탭의
+  비디오 뷰어와 인페인트 마스크 편집기 모두에서 동일하게 동작:
+    * 휠 올리기 = 커서 위치 기준 확대 (1.25배씩, 최대 32x)
+    * 휠 내리기 = 축소 (최소 0.1x)
+    * 휠 클릭 + 드래그 = 화면 이동 (커서 손모양)
+    * F 키 = 줌/팬 초기화 (기본값 복귀)
+  마스크 편집기에서는 줌인 상태에서 브러시로 그려도 정확한 비디오 픽셀
+  좌표에 마스크가 찍힙니다 (역변환 자동).
+- **배치 탭 업스케일 단계에 FPS 컨트롤 추가** — 단일 업스케일 탭과 동일한
+  Auto 체크박스 + 표준 FPS 드롭다운(23.976/24/25/29.97/30/50/59.94/60)을
+  제공합니다. Auto면 영상에서 자동 감지된 effective fps를 그대로 쓰고,
+  꺼면 선택한 값을 강제 적용해서 reader의 -vf fps= 와 writer의 -r 을 동일
+  하게 락합니다.
+- **run.bat 줄바꿈을 CRLF로 정규화** — 일부 환경에서 LF로 저장되어
+  `setlocal` 등이 CMD 파서에 의해 잘못 잘리면서 매번 "Press any key" pause
+  가 뜨던 문제 수정.
+
+# 안정성 관련 알아두면 좋은 점 (v1.0.4 기준)
 - 배치 탭 디노이즈 단계는 단일 디노이즈 탭과 정확히 동일한 파라미터(flow_scale,
   batch_size 등)로 돌아가요. 단일 탭에서 잘 돌던 설정이 배치에서 안 돌면 그건
   버그니까 알려주세요.
@@ -231,6 +249,9 @@ A: 네, 편집기 하단에 프레임 슬라이더가 있어요. 슬라이더를
 - ffmpeg 인코더가 실패하면 단순 "Broken pipe" 대신 ffmpeg의 마지막 stderr
   메시지(코덱 / 출력 경로 / 오디오 mux 문제 등)를 함께 표시해서 진짜 원인을
   바로 알 수 있어요.
+- 뷰어 줌/팬은 단일 ViewportController 모듈(app/viewport_controller.py)이
+  담당. 향후 추가될 뷰어에도 ViewportController(widget) 한 줄이면 동일한
+  조작 체계가 자동으로 들어갑니다.
 """
 
 
@@ -269,7 +290,7 @@ class ChatWorker(QThread):
                     "Referer":
                         "https://khwhite0413.github.io/idol-prompt-builder/",
                     "User-Agent":
-                        "CEC-AllInOne/1.0.3 (+khwhite0413)",
+                        "CEC-AllInOne/1.0.4 (+khwhite0413)",
                 },
                 method="POST",
             )

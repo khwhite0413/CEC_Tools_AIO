@@ -21,7 +21,7 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                               QScrollArea, QSpinBox, QComboBox, QGroupBox,
                               QFileDialog, QProgressBar, QMessageBox,
                               QAbstractItemView, QFormLayout, QSizePolicy,
-                              QLineEdit, QMenu, QShortcut)
+                              QLineEdit, QMenu, QShortcut, QCheckBox)
 
 from app.mask_editor_dialog import MaskEditorDialog
 
@@ -30,6 +30,19 @@ from app.mask_editor_dialog import MaskEditorDialog
 # matches the visual density of monospace text columns so the row width
 # doesn't jitter as the frame cycles. Total cycle ≈ 1s at 100ms tick.
 _SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+# Mirrors upscale_page._STANDARD_FPS_OPTIONS so the batch tab's upscale
+# FPS override drawer offers the exact rates the single-tab does.
+_STANDARD_FPS_OPTIONS = (
+    (23.976, "23.976"),
+    (24.0, "24"),
+    (25.0, "25"),
+    (29.97, "29.97"),
+    (30.0, "30"),
+    (50.0, "50"),
+    (59.94, "59.94"),
+    (60.0, "60"),
+)
 
 # Queue-row foreground colours. Picked to match the bottom progress bar
 # palette (green done / red cancel) for visual consistency. Orange is a
@@ -417,6 +430,29 @@ class BatchPage(QWidget):
         self.ups_batch_frames.setToolTip(tr("batch_tooltip_batch_frames"))
         ups_lay.addRow(QLabel(tr("batch_label_batch_frames") + ":"),
                        self.ups_batch_frames)
+        # FPS override row — Auto checkbox + standard-rate dropdown.
+        # Mirrors the single-tab pattern in upscale_page.py. The
+        # batch_orchestrator forwards `fps_override` straight into
+        # UpscaleWorker.settings, where 0.0 means "use detected".
+        ups_fps_row = QWidget()
+        ups_fps_h = QHBoxLayout(ups_fps_row)
+        ups_fps_h.setContentsMargins(0, 0, 0, 0)
+        ups_fps_h.setSpacing(8)
+        self.ups_fps_auto = QCheckBox(tr("label_fps_auto"))
+        self.ups_fps_auto.setChecked(True)
+        self.ups_fps_auto.setToolTip(tr("tooltip_fps_override"))
+        self.ups_fps_override = QComboBox()
+        for value, text in _STANDARD_FPS_OPTIONS:
+            self.ups_fps_override.addItem(text, value)
+        self.ups_fps_override.setCurrentIndex(
+            _STANDARD_FPS_OPTIONS.index((24.0, "24")))
+        self.ups_fps_override.setEnabled(False)
+        self.ups_fps_override.setToolTip(tr("tooltip_fps_override"))
+        self.ups_fps_auto.toggled.connect(
+            lambda checked: self.ups_fps_override.setEnabled(not checked))
+        ups_fps_h.addWidget(self.ups_fps_auto)
+        ups_fps_h.addWidget(self.ups_fps_override, 1)
+        ups_lay.addRow(QLabel(tr("label_fps_override") + ":"), ups_fps_row)
         self.ups_codec = _CodecCard("upscale")
         ups_lay.addRow(self.ups_codec)
         lay.addWidget(self.ups_box)
@@ -786,6 +822,10 @@ class BatchPage(QWidget):
             "model": self.ups_model.currentData() or "openproteus_2x",
             "target_long_edge": int(self.ups_target.currentData() or 0),
             "max_batch_frames": int(self.ups_batch_frames.value()),
+            # 0.0 = follow auto-detected (snapped) fps in UpscaleWorker;
+            # >0 forces the rate the user picked in the dropdown.
+            "fps_override": (0.0 if self.ups_fps_auto.isChecked()
+                             else float(self.ups_fps_override.currentData())),
             "fp16": True,
             "output_format": self.ups_codec.codec(),
             "prores_profile": self.ups_codec.prores_profile(),

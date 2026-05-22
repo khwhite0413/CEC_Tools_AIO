@@ -114,9 +114,17 @@ class MaskCanvas(QWidget):
             return None
         w = self._mask_image.width()
         h = self._mask_image.height()
+        # Qt pads Format_Grayscale8 rows up to a 4-byte alignment for
+        # SIMD reasons, so bytesPerLine may exceed `w` (e.g. width 1470
+        # gets bpl 1472 → 2 bytes of padding per row). Reading h*w bytes
+        # flat would drift each row by `bpl - w` bytes and project a
+        # painted dot into a diagonal streak — the 21:9 mask bug.
+        # Respect the real stride and slice the padding off.
+        bpl = self._mask_image.bytesPerLine()
         ptr = self._mask_image.bits()
-        ptr.setsize(h * w)
-        return np.frombuffer(ptr, dtype=np.uint8).reshape((h, w)).copy()
+        ptr.setsize(h * bpl)
+        raw = np.frombuffer(ptr, dtype=np.uint8).reshape((h, bpl))
+        return raw[:, :w].copy()
 
     def set_tool(self, tool):
         self.tool = tool

@@ -385,25 +385,46 @@ class VideoInfo:
         self.has_audio = self._probe_audio()
 
     def _probe_audio(self) -> bool:
-        # ffprobe is the cleaner check, but imageio_ffmpeg doesn't ship
-        # one — when it's absent on PATH we silently fell back to False
-        # and the UI showed "audio: 없음" even for files with a real
-        # audio track. ffmpeg -i stderr always lists "Stream … Audio: …"
-        # for any audio stream, so use that as a fallback.
+        # Stage 1 (ffprobe) is the cleanest check; stage 2 (ffmpeg -i
+        # stderr) is the fallback for environments where ffprobe is
+        # missing. imageio_ffmpeg ships only ffmpeg, so on machines
+        # without a system ffprobe the fallback used to be the only
+        # thing keeping the audio label honest — and it was silently
+        # losing in two real cases:
+        #
+        #   - non-ASCII metadata / path under a non-UTF-8 default
+        #     locale (Windows CP949 was the trigger on another user's
+        #     PC) → subprocess.run(..., text=True) raised
+        #     UnicodeDecodeError before any "Audio:" line could be
+        #     scanned. Force encoding="utf-8" with errors="replace" so
+        #     decode never blows up.
+        #   - slow / network / external drives where ffmpeg's stderr
+        #     arrived later than the previous 10 s timeout. Bumped to
+        #     30 s to give it real headroom without hanging the UI on
+        #     genuinely broken files.
+        #
+        # Also: stdin=DEVNULL + ffmpeg's own -nostdin so ffmpeg never
+        # tries to read from a closed pipe, which can deadlock on some
+        # builds. setup.bat now bundles ffprobe.exe next to ffmpeg.exe
+        # so stage 1 should be the path of least resistance on a fresh
+        # install — this fallback hardening is the belt-and-braces.
+        common = dict(capture_output=True, text=True,
+                      encoding="utf-8", errors="replace",
+                      timeout=30, stdin=subprocess.DEVNULL)
         try:
             cmd = [_get_ffprobe(), "-v", "quiet",
                    "-select_streams", "a:0",
                    "-show_entries", "stream=codec_type",
                    "-of", "default=noprint_wrappers=1:nokey=1",
                    self.path]
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            r = subprocess.run(cmd, **common)
             if r.returncode == 0 and r.stdout.strip():
                 return "audio" in r.stdout.lower()
         except Exception:
             pass
         try:
-            cmd = [_get_ffmpeg(), "-hide_banner", "-i", self.path]
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            cmd = [_get_ffmpeg(), "-hide_banner", "-nostdin", "-i", self.path]
+            r = subprocess.run(cmd, **common)
             for line in (r.stderr or "").splitlines():
                 if "Stream " in line and "Audio:" in line:
                     return True
@@ -752,18 +773,28 @@ class FFmpegWriter:
                  prores_profile: str = "hq",
                  color_tags: dict = None):
         self.output_path = output_path
-        # Only stash tags (and only emit nclc on the encoded output) when
-        # the source actually has all three primaries/transfer/matrix.
-        # If any are missing, the source itself is untagged (no colr atom)
-        # — emitting our own bt709 default in that case would make Nuke
-        # apply different inverses to source vs output: the source falls
-        # back to Nuke's Rec.601 heuristic, our output gets read as the
-        # bt709 we tagged. Match the source's "untagged" state instead so
-        # Nuke applies the same heuristic to both files.
+        # Treat the source as "tagged" whenever it has a matrix entry —
+        # AI generators (LTX, Runway, Sora) routinely emit only matrix +
+        # primaries and drop the transfer characteristic, which under
+        # the old all-of-three check fell into the untagged branch and
+        # produced an output with no nclc atom. Players then applied
+        # their BT.601 heuristic to the output while still reading the
+        # source's matrix tag → visible color shift between source and
+        # render. Fill in any missing fields with values derived from
+        # the matrix (BT.709 spec ties matrix/primaries/trc together,
+        # so this matches what MediaInfo / Nuke infer anyway). Truly
+        # untagged sources (Seedance, raw screen grabs) have no matrix
+        # entry and still fall into the untagged branch, preserving
+        # the existing match-source-untagged behaviour.
         tags_in = color_tags or {}
-        if (tags_in.get("matrix") and tags_in.get("primaries")
-                and tags_in.get("trc")):
-            self._color_tags = dict(tags_in)
+        matrix = tags_in.get("matrix")
+        if matrix:
+            self._color_tags = {
+                "matrix":    matrix,
+                "primaries": tags_in.get("primaries") or matrix,
+                "trc":       tags_in.get("trc") or matrix,
+                "range":     tags_in.get("range") or "tv",
+            }
         else:
             self._color_tags = None
         ffmpeg = _get_ffmpeg()

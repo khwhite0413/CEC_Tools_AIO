@@ -21,7 +21,14 @@ Cache layout
 ~~~~~~~~~~~~
 - cache/batch_inpaint/<original_stem>.<ext>
 - cache/batch_denoise/<original_stem>.<ext>
-- output/<yymmdd>_result/<original_stem>.<ext>  (collisions append _2, _3, ...)
+- Final folder:
+    · default → output/<yymmdd>_result/<original_stem>.<ext>
+      (counter `_2`, `_3` … on same-day re-runs)
+    · user custom path → that exact folder, NO date subfolder, NO _N
+- Same-basename collisions inside ANY folder (cache or final) append
+  `_2`, `_3` … to the filename, so two clips named `scene.mp4` from
+  different source directories never overwrite each other's
+  intermediates or final output.
 
 The two cache folders are wiped *eagerly* — when Denoise starts, the
 Inpaint cache is dropped; when Upscale starts, the Denoise cache is
@@ -61,29 +68,44 @@ STAGE_INPAINT = "inpaint"
 STAGE_DENOISE = "denoise"
 STAGE_UPSCALE = "upscale"
 
+# Hard cap on `_2`, `_3` … suffix probing. Realistic batches never come
+# close, but a misconfigured / dirty target dir could otherwise spin the
+# loop forever. Hitting this raises a clear Korean error instead.
+_MAX_COLLISION_SUFFIX = 9999
+
 
 def resolve_output_dir(today: Optional[date] = None,
                        base: Optional[str] = None) -> str:
-    """`<base>/yymmdd_result` — suffixes `_2`, `_3` etc. on collision so a
-    same-day re-run never overwrites earlier batches.
+    """Resolve the FINAL output folder for one batch run.
 
-    `base` defaults to the project's `output/` directory. The caller can
-    override this when the user picks a custom location in the Batch tab;
-    the orchestrator still wraps the run in a `{yymmdd}_result` subfolder
-    so subsequent runs into the same chosen base don't co-mingle.
+    Two modes:
+
+    - User-supplied `base` (Batch tab's output path field is non-empty)
+      → return `base` AS-IS. No date subfolder, no `_N` counter. The
+      folder is the user's chosen folder; deliberate re-runs into the
+      same custom folder are still safe because per-file collisions are
+      handled by `_avoid_collision` at every stage.
+
+    - `base` is None (user left the field blank)
+      → `output/<yymmdd>_result/`. Same-day re-runs get `_2`, `_3` …
+      suffixed onto the date stem so earlier batches are never
+      overwritten. `_MAX_COLLISION_SUFFIX` bounds the probe loop.
     """
+    if base:
+        return base
     today = today or date.today()
-    base_dir = base if base else _OUTPUT_DIR
     stem = today.strftime("%y%m%d") + "_result"
-    candidate = os.path.join(base_dir, stem)
+    candidate = os.path.join(_OUTPUT_DIR, stem)
     if not os.path.exists(candidate):
         return candidate
-    n = 2
-    while True:
-        candidate = os.path.join(base_dir, f"{stem}_{n}")
+    for n in range(2, _MAX_COLLISION_SUFFIX + 1):
+        candidate = os.path.join(_OUTPUT_DIR, f"{stem}_{n}")
         if not os.path.exists(candidate):
             return candidate
-        n += 1
+    raise RuntimeError(
+        f"날짜 출력 폴더 후보를 _2부터 _{_MAX_COLLISION_SUFFIX}까지 "
+        f"시도했지만 모두 존재합니다. {_OUTPUT_DIR} 의 결과 폴더를 정리한 "
+        "뒤 다시 시도하세요.")
 
 
 def _ext_for_codec(codec: str) -> str:
@@ -98,19 +120,28 @@ def _wipe_dir(path: str) -> None:
 def _avoid_collision(path: str) -> str:
     """Return `path` if free, else `<stem>_2<ext>`, `<stem>_3<ext>` etc.
 
-    Used only for the final output folder — same-basename collisions
-    can occur when the queue holds two clips with identical filenames
-    from different source directories.
+    Applied at EVERY stage (cache + final), not just the last one. The
+    cache dirs ARE pre-wiped at run start, but pre-wipe only clears
+    leftovers from a *previous* run — same-basename clips from
+    different source directories in the *current* queue would still
+    collide and silently overwrite each other's intermediates without
+    this helper. Same idea for the final folder when the user re-runs
+    into a custom path.
+
+    `_MAX_COLLISION_SUFFIX` bounds the probe loop. Hitting it raises so
+    the orchestrator's outer try/except can surface a clear message.
     """
     if not os.path.exists(path):
         return path
     base, ext = os.path.splitext(path)
-    n = 2
-    while True:
+    for n in range(2, _MAX_COLLISION_SUFFIX + 1):
         candidate = f"{base}_{n}{ext}"
         if not os.path.exists(candidate):
             return candidate
-        n += 1
+    raise RuntimeError(
+        f"파일명 충돌 회피 후보를 _2부터 _{_MAX_COLLISION_SUFFIX}까지 "
+        f"시도했지만 모두 존재합니다. 대상 폴더({os.path.dirname(path)}) "
+        "를 정리한 뒤 다시 시도하세요.")
 
 
 def _compute_dreamina_mask(video_path: str,
@@ -301,101 +332,141 @@ class BatchOrchestrator(QThread):
 
         out_dir = resolve_output_dir(base=self._output_dir_base)
         os.makedirs(out_dir, exist_ok=True)
-        # Start clean every run so leftovers from a previous failed batch
-        # don't get re-piped into the next.
-        _wipe_dir(BATCH_INPAINT_CACHE)
-        _wipe_dir(BATCH_DENOISE_CACHE)
+        try:
+            # Start clean every run so leftovers from a previous failed
+            # batch don't get re-piped into the next.
+            _wipe_dir(BATCH_INPAINT_CACHE)
+            _wipe_dir(BATCH_DENOISE_CACHE)
 
-        self.log.emit(f"배치 시작 — 출력 폴더: {out_dir}")
-        self.log.emit("활성 단계: "
-                      + " → ".join(s["label"] for s in stages))
+            self.log.emit(f"배치 시작 — 출력 폴더: {out_dir}")
+            self.log.emit("활성 단계: "
+                          + " → ".join(s["label"] for s in stages))
 
-        self._device = get_device()
-        total = len(self._files)
+            self._device = get_device()
+            total = len(self._files)
 
-        # current_inputs[i] tracks where the i-th queued clip "lives"
-        # right now — starts as the original source, gets replaced by
-        # the latest stage's output path after each stage completes.
-        current_inputs: List[str] = list(self._files)
+            # current_inputs[i] tracks where the i-th queued clip
+            # "lives" right now — starts as the original source, gets
+            # replaced by the latest stage's output path after each
+            # stage completes.
+            current_inputs: List[str] = list(self._files)
 
-        for stage_idx, stage in enumerate(stages):
-            if self._cancel:
-                self.cancelled.emit()
-                return
-            is_last = (stage_idx == len(stages) - 1)
-
-            codec = stage["settings"].get("output_format", "h264")
-            ext = _ext_for_codec(codec)
-
-            if is_last:
-                target_dir = out_dir
-            else:
-                target_dir = stage["cache_dir"]
-                os.makedirs(target_dir, exist_ok=True)
-
-            new_outputs: List[str] = []
-            for i, src in enumerate(current_inputs, start=1):
+            for stage_idx, stage in enumerate(stages):
                 if self._cancel:
                     self.cancelled.emit()
                     return
-                # Stem comes from the ORIGINAL source so all stages
-                # produce a consistently-named file ("scene_01.mp4" all
-                # the way through), regardless of which cache-renamed
-                # intermediate they're reading from.
-                stem = os.path.splitext(
-                    os.path.basename(self._files[i - 1]))[0]
-                out = os.path.join(target_dir, f"{stem}{ext}")
+                is_last = (stage_idx == len(stages) - 1)
+
+                codec = stage["settings"].get("output_format", "h264")
+                ext = _ext_for_codec(codec)
+
                 if is_last:
-                    # Cheap insurance against same-basename collisions
-                    # in the final folder (different source dirs, same
-                    # filename). Intermediates run in pre-wiped dirs so
-                    # no collision possible there.
+                    target_dir = out_dir
+                else:
+                    target_dir = stage["cache_dir"]
+                    os.makedirs(target_dir, exist_ok=True)
+
+                new_outputs: List[str] = []
+                for i, src in enumerate(current_inputs, start=1):
+                    if self._cancel:
+                        self.cancelled.emit()
+                        return
+                    # Stem comes from the ORIGINAL source so all stages
+                    # produce a consistently-named file ("scene_01.mp4"
+                    # all the way through), regardless of which
+                    # cache-renamed intermediate they're reading from.
+                    stem = os.path.splitext(
+                        os.path.basename(self._files[i - 1]))[0]
+                    out = os.path.join(target_dir, f"{stem}{ext}")
+                    # Collision-avoid at EVERY stage. Cache dirs are
+                    # pre-wiped at run start, but pre-wipe only clears
+                    # leftovers from a *previous* run — two queued
+                    # clips with the same basename from different
+                    # source folders would still collide here and the
+                    # second clip would silently overwrite the first
+                    # clip's intermediate, then both downstream stages
+                    # would read identical bytes. _avoid_collision keeps
+                    # each clip on its own unique filename for the
+                    # entire run, so the final folder ends up with two
+                    # genuinely different results (e.g. `scene.mp4` +
+                    # `scene_2.mp4`).
                     out = _avoid_collision(out)
 
-                self.item_status.emit(
-                    i - 1, f"running:{stage['name']}", "")
-                self.log.emit(
-                    f"[{stage_idx + 1}/{len(stages)} {stage['label']}] "
-                    f"{i}/{total} · {os.path.basename(src)}")
-
-                worker = stage["build"](src, out)
-                if worker is None:
-                    # Worker construction failed — already-emitted error
-                    # carries the message. Bail.
-                    return
-                self._run_worker(worker, stage["name"], i, total)
-                if self._errored:
-                    return
-                if self._cancel:
-                    self.cancelled.emit()
-                    return
-                if not os.path.exists(out):
                     self.item_status.emit(
-                        i - 1, "error", f"{stage['label']} 출력 누락")
-                    self.error.emit(
-                        f"[{os.path.basename(src)}] {stage['label']} "
-                        "출력이 생성되지 않았습니다.")
-                    return
-                new_outputs.append(out)
-                if is_last:
-                    self.item_status.emit(i - 1, "all_done", "")
-                else:
-                    self.item_status.emit(
-                        i - 1, f"stage_done:{stage['name']}", "")
-
-            # Wipe the PREVIOUS stage's cache as soon as we're done
-            # reading from it. The cache is only useful as input to the
-            # current stage, which we just finished.
-            if stage_idx > 0:
-                prev = stages[stage_idx - 1]
-                if prev["cache_dir"]:
-                    _wipe_dir(prev["cache_dir"])
+                        i - 1, f"running:{stage['name']}", "")
                     self.log.emit(
-                        f"[캐시 정리] {prev['label']} 중간 결과물 삭제됨.")
+                        f"[{stage_idx + 1}/{len(stages)} {stage['label']}] "
+                        f"{i}/{total} · {os.path.basename(src)}")
 
-            current_inputs = new_outputs
+                    worker = stage["build"](src, out)
+                    if worker is None:
+                        # Worker construction failed — already-emitted
+                        # error carries the message. Bail.
+                        return
+                    self._run_worker(worker, stage["name"], i, total)
+                    if self._errored:
+                        return
+                    if self._cancel:
+                        self.cancelled.emit()
+                        return
+                    if not os.path.exists(out):
+                        self.item_status.emit(
+                            i - 1, "error", f"{stage['label']} 출력 누락")
+                        self.error.emit(
+                            f"[{os.path.basename(src)}] {stage['label']} "
+                            "출력이 생성되지 않았습니다.")
+                        return
+                    new_outputs.append(out)
+                    if is_last:
+                        self.item_status.emit(i - 1, "all_done", "")
+                    else:
+                        self.item_status.emit(
+                            i - 1, f"stage_done:{stage['name']}", "")
 
-        self.all_done.emit(out_dir)
+                # Wipe the PREVIOUS stage's cache as soon as we're done
+                # reading from it. The cache is only useful as input to
+                # the current stage, which we just finished.
+                if stage_idx > 0:
+                    prev = stages[stage_idx - 1]
+                    if prev["cache_dir"]:
+                        _wipe_dir(prev["cache_dir"])
+                        self.log.emit(
+                            f"[캐시 정리] {prev['label']} 중간 결과물 삭제됨.")
+
+                current_inputs = new_outputs
+
+            self.all_done.emit(out_dir)
+        finally:
+            # If the run aborted (cancel/error/exception) before writing
+            # anything into a *default* date-stamped output folder, the
+            # empty folder would otherwise sit on disk and bump the
+            # `_N` suffix counter on the next run. Remove it. Never
+            # touches user-supplied custom paths (out of scope), never
+            # touches a non-empty folder (preserves partial results).
+            self._cleanup_if_empty_default(out_dir)
+
+    def _cleanup_if_empty_default(self, out_dir: str) -> None:
+        """Remove `out_dir` iff it's the default date-stamped folder AND
+        it's empty.
+
+        Called from the `_run_inner` finally block. Skipped when:
+          - the user supplied a custom path (`_output_dir_base` truthy)
+            — never touch a folder the user picked themselves
+          - the folder has any files in it — partial results from a
+            mid-run failure are kept so the user can salvage them
+
+        Without this cleanup, an early failure (e.g. Dreamina mask
+        couldn't be computed for the first clip) leaves an empty
+        `<yymmdd>_result/` behind, and the next attempt silently bumps
+        to `_2` even though the user has never seen a successful run.
+        """
+        if self._output_dir_base:
+            return
+        try:
+            if os.path.isdir(out_dir) and not os.listdir(out_dir):
+                os.rmdir(out_dir)
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # Per-stage worker builders. Each returns None on construction

@@ -24,6 +24,7 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
 from app.i18n import tr
 from app.video_player import VideoPlayer
 from app.upscale_worker import UpscaleWorker, MODELS, model_available
+from app.aspect_ratio_option import AspectRatioOption
 from fdcore.video_io import auto_format_from_codec
 
 
@@ -227,6 +228,14 @@ class UpscalePage(QWidget):
             "color: rgba(160, 164, 180, 200); "
             "font-size: 11px; padding-top: 2px;")
         basic.addRow("", self.target_info_label)
+
+        # 16:9 / 9:16 forced-aspect toggle. Auto-orients (landscape →
+        # 16:9, portrait → 9:16) and center-crops the worker output.
+        # Same widget class is reused on the batch tab.
+        self.aspect_force = AspectRatioOption()
+        self.aspect_force.check.toggled.connect(
+            lambda _: self._refresh_res_preview())
+        basic.addRow("", self.aspect_force)
 
         self.sb_batch_frames = QSpinBox()
         self.sb_batch_frames.setRange(0, 5000)
@@ -525,6 +534,19 @@ class UpscalePage(QWidget):
                 mid_w=model_w, mid_h=model_h,
                 dst_w=dst_w, dst_h=dst_h))
 
+        # If 16:9 / 9:16 force is enabled, simulate the center-crop the
+        # worker will apply so the predicted dimensions + aspect-ratio
+        # readout match what actually gets written. Auto-orients based on
+        # the post-resize long edge.
+        if (self.aspect_force.enabled()
+                and dst_w > 0 and dst_h > 0):
+            target_ar = (16.0 / 9.0) if dst_w >= dst_h else (9.0 / 16.0)
+            cur_ar = dst_w / dst_h
+            if cur_ar > target_ar + 1e-6:
+                dst_w = max(2, int(round(dst_h * target_ar / 2.0)) * 2)
+            elif cur_ar < target_ar - 1e-6:
+                dst_h = max(2, int(round(dst_w / target_ar / 2.0)) * 2)
+
         # Aspect ratio follows the source (cv2 resize preserves it via
         # the proportional ratio math above). gcd-simplified — odd source
         # ratios like 1470×630 get reduced to 7:3 rather than 16:9.
@@ -573,6 +595,7 @@ class UpscalePage(QWidget):
             "fp16":              self.chk_fp16.isChecked(),
             "max_batch_frames":  self.sb_batch_frames.value(),
             "target_long_edge":  int(self.target_combo.currentData() or 0),
+            "force_16_9":        self.aspect_force.enabled(),
             "output_format":     fmt,
             "prores_profile":    (self.prores_profile.currentData()
                                   or "4444"),

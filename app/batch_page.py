@@ -24,6 +24,7 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                               QLineEdit, QMenu, QShortcut, QCheckBox)
 
 from app.mask_editor_dialog import MaskEditorDialog
+from app.aspect_ratio_option import AspectRatioOption
 
 
 # Spinner used in queue-row "running" state. Braille block animation
@@ -424,6 +425,10 @@ class BatchPage(QWidget):
         self.ups_target.addItem("4K UHD (3840)", 3840)
         self.ups_target.addItem("8K UHD (7680)", 7680)
         ups_lay.addRow(QLabel(tr("batch_label_target") + ":"), self.ups_target)
+        # 16:9 / 9:16 forced-aspect toggle. Shared widget with the single
+        # Upscale tab; the worker reads `force_16_9` from settings.
+        self.ups_aspect_force = AspectRatioOption()
+        ups_lay.addRow("", self.ups_aspect_force)
         self.ups_batch_frames = QSpinBox()
         self.ups_batch_frames.setRange(0, 5000)
         self.ups_batch_frames.setValue(0)
@@ -821,6 +826,7 @@ class BatchPage(QWidget):
             "enabled": self.ups_box.isChecked(),
             "model": self.ups_model.currentData() or "openproteus_2x",
             "target_long_edge": int(self.ups_target.currentData() or 0),
+            "force_16_9": self.ups_aspect_force.enabled(),
             "max_batch_frames": int(self.ups_batch_frames.value()),
             # 0.0 = follow auto-detected (snapped) fps in UpscaleWorker;
             # >0 forces the rate the user picked in the dropdown.

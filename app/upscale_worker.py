@@ -166,10 +166,36 @@ class UpscaleWorker(QThread):
             post_interp = (cv2.INTER_LANCZOS4
                            if out_w > model_w else cv2.INTER_AREA)
 
+            # Optional 16:9 / 9:16 force — auto-oriented from the
+            # post-resize long edge. Landscape (w >= h) → 16:9,
+            # portrait (h > w) → 9:16. Implemented as a pure center
+            # crop applied per frame after post_resize; no extra
+            # resampling. final_w / final_h drive the writer dims and
+            # crop_x / crop_y mark the top-left of the keep region.
+            force_aspect = bool(self.settings.get("force_16_9", False))
+            if force_aspect and out_w > 0 and out_h > 0:
+                target_ar = (16.0 / 9.0) if out_w >= out_h else (9.0 / 16.0)
+                cur_ar = out_w / out_h
+                if cur_ar > target_ar + 1e-6:
+                    # too wide → trim left/right
+                    final_w = max(2, int(round(out_h * target_ar / 2.0)) * 2)
+                    final_h = out_h
+                elif cur_ar < target_ar - 1e-6:
+                    # too tall → trim top/bottom
+                    final_w = out_w
+                    final_h = max(2, int(round(out_w / target_ar / 2.0)) * 2)
+                else:
+                    final_w, final_h = out_w, out_h
+            else:
+                final_w, final_h = out_w, out_h
+            crop_x = (out_w - final_w) // 2
+            crop_y = (out_h - final_h) // 2
+            need_crop = (final_w, final_h) != (out_w, out_h)
+
             writer = FFmpegWriter(
                 self.output_path,
                 effective_fps,
-                out_w, out_h,
+                final_w, final_h,
                 source_path=self.video_path,
                 color_tags=info.color_tags(),
                 output_format=self.settings.get("output_format", "h264"),
@@ -200,6 +226,9 @@ class UpscaleWorker(QThread):
                     if post_resize:
                         up = cv2.resize(up, (out_w, out_h),
                                         interpolation=post_interp)
+                    if need_crop:
+                        up = up[crop_y:crop_y + final_h,
+                                crop_x:crop_x + final_w]
                     writer.write(bgr24_to_bgr48le(up))
                     if (i + 1) % 4 == 0:
                         # batch-internal progress so the UI doesn't sit

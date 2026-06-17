@@ -172,6 +172,12 @@ def main():
     app.setStyle("Fusion")
     _apply_dark_palette(app)
 
+    # Stop the mouse wheel from silently bumping spinbox / combobox /
+    # slider values while the user is scrolling the parameter panel.
+    # See app/wheel_guard.py for the rationale.
+    from app.wheel_guard import install as _install_wheel_guard
+    _install_wheel_guard(app)
+
     # App icon (taskbar / window decoration / Alt-Tab)
     icon_path = os.path.join(ROOT, "assets", "logo", "aimz_icon_v02.png")
     if os.path.exists(icon_path):

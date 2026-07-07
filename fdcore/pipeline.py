@@ -17,10 +17,25 @@ encoded values — running them in linear silently changed denoise behavior.
 
 from typing import Optional, Callable
 
+import torch
+
 from . import video_io
 from .temporal_average import temporal_flow_average
 from .extract_noise import extract_noise
 from .progress import ProgressReporter
+
+
+# Streaming-loop chunk size: number of frames to commit per iteration. Each
+# iteration also holds `window_size` frames of look-behind + `window_size` of
+# look-ahead, so the buffer under denoise is `chunk + 2*window` frames.
+#
+# 200 was picked so the peak per-chunk CPU footprint (buffer + BHWC tensor +
+# BCHW copy + zeros_like output + single-channel weight accumulator) fits
+# comfortably in ~10 GB at 720p on the desktop's default settings, leaving
+# headroom for the ffmpeg reader/writer subprocesses and the model on GPU.
+# Larger chunks = fewer Python-loop iterations, smaller = tighter memory
+# ceiling. Not currently exposed to the UI; tune here if hitting new limits.
+_STREAM_CHUNK_SIZE = 200
 
 
 DEFAULT_SETTINGS = {
@@ -74,16 +89,22 @@ def run_on_tensor(images_bhwc, settings: dict,
                   reporter: Optional[ProgressReporter] = None) -> dict:
     """Run the full denoise pipeline on a BHWC float [0,1] RGB tensor.
 
-    Returns dict with keys: denoised, clean, weight_map,
-    noise_total / noise_chroma / noise_luma (only if compute_noise_preview).
+    Returns dict with keys: denoised, clean, and (only if
+    compute_noise_preview) noise_total / noise_chroma / noise_luma.
+
+    The `weight_map` key used to be part of this dict — a normalized 3-channel
+    visualization of temporal_flow_average's per-pixel weight accumulator.
+    Nothing in `run_on_file` ever read it and on long clips its derivation
+    alone allocated tens of GB on CPU, tripping DefaultCPUAllocator. The
+    derivation + key have been removed.
     """
     if reporter is None:
         reporter = ProgressReporter(progress_cb)
 
     settings = merged_settings(settings)
-    clean, weight_map = temporal_flow_average(images_bhwc, settings, reporter)
+    clean, _ = temporal_flow_average(images_bhwc, settings, reporter)
 
-    out = {"clean": clean, "weight_map": weight_map}
+    out = {"clean": clean}
 
     if settings.get("compute_noise_preview", False):
         n_total, n_chroma, n_luma = extract_noise(images_bhwc, clean, settings)
@@ -105,7 +126,25 @@ def run_on_file(input_path: str, output_path: str, settings: dict,
                 frame_cap: int = -1,
                 noise_path: Optional[str] = None,
                 phase_cb: Optional[Callable[[str], None]] = None) -> dict:
-    """Read input video, denoise, write output with original audio.
+    """Streaming denoise pipeline: read/denoise/encode in overlapping chunks
+    so CPU RAM stays bounded regardless of clip length.
+
+    The previous implementation loaded the whole video into a single BHWC
+    float32 CPU tensor before running temporal_flow_average on it, then
+    converted the entire denoised tensor back to a list of numpy frames
+    for the writer. For an 8000-frame 720p clip that meant ~290 GB of
+    virtual memory held resident on the CPU side and reliable
+    DefaultCPUAllocator OOMs on any halfway-serious source.
+
+    This version keeps only `_STREAM_CHUNK_SIZE + 2*window_size` frames in
+    memory at once. Each chunk is denoised with `window_size` frames of
+    look-behind and `window_size` frames of look-ahead present in the
+    buffer, then only the middle frames are committed to the writer.
+    Every emitted frame therefore sees the same ±window_size context it
+    would have seen in a full-video batch run, so per-frame output is
+    numerically identical to the old batch pipeline. tpdf_dither is
+    applied per chunk (its output is statistically indistinguishable from
+    a full-tensor dither — the noise is per-pixel-independent by design).
 
     Args:
         frame_cap: -1 = full video, otherwise process only first N frames
@@ -166,69 +205,181 @@ def run_on_file(input_path: str, output_path: str, settings: dict,
         _phase("done")
         return {"denoised": output_path, "noise": None}
 
-    bgr = video_io.read_frames_bgr(input_path, 0, frame_cap, fps=effective_fps)
-    if not bgr:
-        raise RuntimeError(f"No frames read from {input_path}")
-
-    if passthrough:
-        # Fallback passthrough: source codec / output format ruled out
-        # stream-copy (e.g. PNG sequence input or ProRes output requested).
-        # Decoded BGR bytes go straight to the writer.
-        _phase("processing")
-        _phase("encoding")
-        out_frames = bgr
-        result = {"denoised": None}
-    else:
-        images = video_io.frames_bgr_to_tensor(bgr)
-
-        _phase("processing")
-        result = run_on_tensor(images, settings, reporter=reporter)
-
-        _phase("encoding")
-        denoised = result["denoised"]
-
-        # Apply TPDF dither only on the 8-bit h264 path. ProRes (10-bit) and
-        # PNG sequence skip it.
-        if fmt == "h264":
-            denoised = video_io.tpdf_dither(denoised).clamp(0, 1)
-
-        out_frames = video_io.tensor_to_frames_bgr(denoised)
-
-    h, w = out_frames[0].shape[:2]
-    if fmt == "image_seq":
-        # PNG sequence in a folder + meta.json sidecar (no ffmpeg).
-        writer = video_io.ImageSequenceWriter(
-            output_path, effective_fps, w, h, source_path=input_path)
-    else:
-        writer = video_io.FFmpegWriter(
-            output_path, effective_fps, w, h,
-            source_path=input_path,
-            output_format=fmt,
-            prores_profile=settings.get("prores_profile", "hq"),
-            color_tags=src_tags)
+    # Open streaming reader + peek first frame to lock dimensions before
+    # constructing writers. Every downstream frame arrives one at a time.
+    reader = video_io.StreamingFrameReader(input_path, fps=effective_fps)
     try:
-        for f in out_frames:
-            writer.write(f)
-    finally:
-        writer.release()
+        first_frame = reader.read()
+        if first_frame is None:
+            raise RuntimeError(f"No frames read from {input_path}")
+        h, w = first_frame.shape[:2]
 
-    out = {"denoised": output_path, "noise": None}
+        # Total frame count for progress + frame_cap enforcement. The
+        # reader's frame_count comes from the source metadata; frame_cap
+        # (set for the 80-frame quick preview path) tightens it further.
+        total_frames = reader.frame_count
+        if frame_cap > 0:
+            total_frames = min(total_frames, frame_cap)
 
-    if noise_path and result.get("noise_total") is not None:
-        _phase("encoding_noise")
-        n_frames = video_io.tensor_to_frames_bgr(result["noise_total"])
-        nh, nw = n_frames[0].shape[:2]
-        # No source_path = no audio mux; visualization-only preview at
-        # the same effective fps as the main output so the wipe lines up.
-        nwriter = video_io.FFmpegWriter(noise_path, effective_fps, nw, nh,
-                                        source_path=None,
-                                        color_tags=src_tags)
+        # Main writer (denoised output).
+        if fmt == "image_seq":
+            writer = video_io.ImageSequenceWriter(
+                output_path, effective_fps, w, h, source_path=input_path)
+        else:
+            writer = video_io.FFmpegWriter(
+                output_path, effective_fps, w, h,
+                source_path=input_path,
+                output_format=fmt,
+                prores_profile=settings.get("prores_profile", "hq"),
+                color_tags=src_tags)
+
+        # Optional noise-preview writer, interleaved with main writer so
+        # noise frames land at the same effective fps and can be A/B
+        # wiped against the denoised output. Passthrough skips denoise
+        # entirely, so an accompanying noise preview would be zeros —
+        # skip creating the writer to avoid emitting an empty mp4.
+        want_noise = bool(noise_path
+                          and settings.get("compute_noise_preview", False)
+                          and not passthrough)
+        noise_writer = None
+        if want_noise:
+            # No source_path = no audio mux; visualization-only preview.
+            noise_writer = video_io.FFmpegWriter(
+                noise_path, effective_fps, w, h,
+                source_path=None, color_tags=src_tags)
+
         try:
-            for f in n_frames:
-                nwriter.write(f)
+            _phase("processing")
+            if passthrough:
+                # Fallback passthrough (stream_copy path already handled
+                # above): decode → immediate re-encode, no denoise, no
+                # dither, no tensor round-trip. Also streams the writer.
+                _stream_passthrough(reader, writer, first_frame,
+                                    total_frames, reporter, frame_cap)
+            else:
+                _stream_denoise(reader, writer, noise_writer, first_frame,
+                                settings, total_frames, reporter, fmt,
+                                frame_cap)
+            _phase("encoding")
         finally:
-            nwriter.release()
-        out["noise"] = noise_path
+            try:
+                writer.release()
+            finally:
+                if noise_writer is not None:
+                    noise_writer.release()
+    finally:
+        reader.release()
 
     _phase("done")
-    return out
+    return {"denoised": output_path,
+            "noise": noise_path if want_noise else None}
+
+
+def _stream_passthrough(reader, writer, first_frame, total_frames,
+                        reporter, frame_cap):
+    """Passthrough loop — decode + re-encode with no denoise. Used when the
+    source codec / output format combination rules out `ffmpeg -c copy`."""
+    writer.write(first_frame)
+    written = 1
+    reporter.update(written, total_frames)
+    while frame_cap <= 0 or written < frame_cap:
+        f = reader.read()
+        if f is None:
+            break
+        writer.write(f)
+        written += 1
+        reporter.update(written, total_frames)
+
+
+def _stream_denoise(reader, writer, noise_writer, first_frame, settings,
+                    total_frames, reporter, fmt, frame_cap):
+    """Rolling-buffer streaming denoise. See run_on_file docstring for the
+    memory rationale and the ±window_size overlap that makes output
+    numerically identical to the old full-tensor path."""
+    window = int(settings.get("window_size", 3))
+    chunk = _STREAM_CHUNK_SIZE
+    clamp_output = bool(settings.get("clamp_output", True))
+    compute_noise = (noise_writer is not None
+                     and bool(settings.get("compute_noise_preview", False)))
+
+    # Rolling buffer of raw BGR frames straight from the reader.
+    buffer = [first_frame]
+    reads = 1                     # first_frame is already in `buffer`
+    emitted = 0                   # frames committed to the writer so far
+    carry_over = 0                # leading `carry_over` frames in `buffer`
+                                  # are the previous chunk's look-behind
+
+    def _refill(target: int) -> bool:
+        """Read frames until `buffer` has `target` entries or we hit EOF /
+        frame_cap. Returns True if the source may still have more; False
+        once we've exhausted it."""
+        nonlocal reads
+        while len(buffer) < target:
+            if frame_cap > 0 and reads >= frame_cap:
+                return False
+            f = reader.read()
+            if f is None:
+                return False
+            buffer.append(f)
+            reads += 1
+        return True
+
+    has_more = _refill(chunk + window)
+
+    while buffer:
+        # Denoise the current buffer as a single mini-batch.
+        tensor = video_io.frames_bgr_to_tensor(buffer)
+        clean, _ = temporal_flow_average(tensor, settings, reporter)
+        clean_out = clean.clamp(0, 1) if clamp_output else clean
+
+        # Which subset of the buffer do we commit to the writer? Skip the
+        # look-behind at the front; if more source frames still exist,
+        # also hold back a `window` tail as look-ahead for the next chunk.
+        emit_start = carry_over
+        remaining = len(buffer) - emit_start
+        if has_more:
+            emit_count = max(0, min(chunk, remaining - window))
+        else:
+            emit_count = remaining
+        emit_end = emit_start + emit_count
+
+        committed = None
+        if emit_count > 0:
+            committed = clean_out[emit_start:emit_end]
+            if fmt == "h264":
+                # Per-chunk TPDF dither — the noise is per-pixel-independent
+                # so this is statistically identical to a whole-tensor pass.
+                committed = video_io.tpdf_dither(committed).clamp(0, 1)
+            for f_out in video_io.tensor_to_frames_bgr(committed):
+                writer.write(f_out)
+
+            if compute_noise:
+                # Match the writer's committed range on both sides of the
+                # noise diff so `original - clean` lines up per frame.
+                orig_slice = tensor[emit_start:emit_end]
+                clean_slice = clean[emit_start:emit_end]
+                n_total, _, _ = extract_noise(
+                    orig_slice, clean_slice, settings)
+                for f_n in video_io.tensor_to_frames_bgr(n_total):
+                    noise_writer.write(f_n)
+
+            emitted += emit_count
+            reporter.update(emitted, total_frames)
+
+        # Drop everything except the tail we need as look-behind for the
+        # next chunk. Free intermediates aggressively — the whole point
+        # of streaming is to keep the working set small.
+        del tensor, clean, clean_out
+        if committed is not None:
+            del committed
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        if not has_more:
+            break
+
+        keep_from = max(0, emit_end - window)
+        buffer = buffer[keep_from:]
+        carry_over = min(window, len(buffer))
+
+        has_more = _refill(carry_over + chunk + window)

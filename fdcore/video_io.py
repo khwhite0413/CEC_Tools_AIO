@@ -644,6 +644,103 @@ class FFmpegReader:
                 pass
 
 
+class StreamingFrameReader:
+    """Unified streaming frame reader — one .read() call = next frame (numpy
+    HxWx3, uint16 for video / uint8 for image sequences) or None on EOF.
+
+    Wraps FFmpegReader for video files and cv2.VideoCapture(CAP_IMAGES) for
+    image sequences behind a single interface so pipeline.run_on_file can
+    consume frames one at a time regardless of source type. Replaces the
+    old pattern of reading every frame upfront into a list — that
+    accumulator held the entire video in CPU RAM (~88 GB for 8000 720p
+    frames), which OOMed DefaultCPUAllocator on long clips.
+
+    Metadata (width, height, fps, frame_count) is exposed via read-only
+    properties so the caller can set up the writer + progress bar before
+    the first .read() lands.
+    """
+
+    def __init__(self, path: str, fps: float = None):
+        if is_image_sequence(path):
+            self._is_seq = True
+            info = ImageSequenceInfo(path)
+            cap_path = os.path.join(path, info.pattern)
+            self._cap = cv2.VideoCapture(cap_path, cv2.CAP_IMAGES)
+            self._reader = None
+            self._frame_count = int(info.frame_count)
+            self._width = int(info.width)
+            self._height = int(info.height)
+            # ImageSequenceInfo carries fps only if a meta.json specified
+            # one; otherwise fall back to the caller-provided fps or 24.
+            self._fps = float(fps) if fps and fps > 0 else float(
+                getattr(info, "fps", None) or 24.0)
+            self._has_audio = False
+        else:
+            self._is_seq = False
+            self._reader = FFmpegReader(path, fps=fps)
+            self._cap = None
+            self._frame_count = int(self._reader.frame_count)
+            self._width = int(self._reader.width)
+            self._height = int(self._reader.height)
+            self._fps = float(self._reader.fps)
+            self._has_audio = bool(self._reader.has_audio)
+
+    @property
+    def width(self) -> int:
+        return self._width
+
+    @property
+    def height(self) -> int:
+        return self._height
+
+    @property
+    def fps(self) -> float:
+        return self._fps
+
+    @property
+    def frame_count(self) -> int:
+        return self._frame_count
+
+    @property
+    def has_audio(self) -> bool:
+        return self._has_audio
+
+    def read(self):
+        """Return next frame or None on EOF. Never raises on end-of-stream."""
+        if self._is_seq:
+            if self._cap is None:
+                return None
+            ret, frame = self._cap.read()
+            return frame if ret else None
+        else:
+            if self._reader is None:
+                return None
+            return self._reader.read()
+
+    def release(self):
+        if self._is_seq:
+            if self._cap is not None:
+                try:
+                    self._cap.release()
+                except Exception:
+                    pass
+                self._cap = None
+        else:
+            if self._reader is not None:
+                try:
+                    self._reader.release()
+                except Exception:
+                    pass
+                self._reader = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.release()
+        return False
+
+
 def read_frames_bgr(path: str, start: int = 0, count: int = -1,
                     fps: float = None):
     """Read raw BGR frames as a list of HxWx3 uint8/uint16 arrays.

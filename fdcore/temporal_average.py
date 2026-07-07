@@ -226,7 +226,13 @@ def temporal_flow_average(images: torch.Tensor, settings: dict,
     """Motion-compensated temporal averaging.
 
     Returns:
-        (clean_bhwc, weight_map_bhwc): both float32 tensors, [0,1].
+        (clean_bhwc, None): clean is a float32 tensor in [0,1]. The second
+        tuple slot used to carry a normalized 3-channel weight visualization
+        for debug purposes, but no caller ever read it — building it on a
+        long clip allocated B×H×W×3 float32 on CPU (~28 GB per 8000 720p
+        frames just for the base weight map, and 3× more when expanded to
+        RGB), which OOMed DefaultCPUAllocator on long runs. Callers unpack
+        the tuple as `clean, _`.
     """
     B, H, W, C = images.shape
     src_device = images.device
@@ -252,11 +258,12 @@ def temporal_flow_average(images: torch.Tensor, settings: dict,
     # Don't clamp here — pipeline.run_on_tensor honors clamp_output instead.
     clean = output.permute(0, 2, 3, 1).to(src_device)
 
-    w_min = weight_maps.min()
-    w_max = weight_maps.max()
-    weight_vis = (weight_maps - w_min) / (w_max - w_min + 1e-8)
-    weight_vis = weight_vis.expand(-1, 3, -1, -1).permute(0, 2, 3, 1).to(src_device)
+    # weight_maps is still populated in-place by the workers above (harmless
+    # single-channel accumulator). It used to be normalized and expanded to
+    # a full B×H×W×3 float32 tensor here for return, but nothing in the file
+    # save path consumed it — see docstring above. Skipping the derivation
+    # avoids a ~28 GB CPU allocation spike per 8000 720p frames.
 
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-    return clean, weight_vis
+    return clean, None

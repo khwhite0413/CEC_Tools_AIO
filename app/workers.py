@@ -21,6 +21,11 @@ PREVIEW_FRAMES = 80
 
 class _Worker(QThread):
     progress = pyqtSignal(int, int)
+    # Chunk-scoped progress within a single temporal_flow_average call.
+    # In streaming mode this is emitted many times per run (once per
+    # inner batch inside a chunk); the UI wires it to a secondary bar
+    # that oscillates while the main `progress` bar climbs monotonically.
+    chunk_progress = pyqtSignal(int, int)
     finished_signal = pyqtSignal(str)
     error_signal = pyqtSignal(str)
     noise_ready = pyqtSignal(str)
@@ -35,10 +40,14 @@ class _Worker(QThread):
         self.output_path = output_path
         self.frame_cap = frame_cap
         self.noise_path = noise_path
-        self.reporter = ProgressReporter(self._emit_progress)
+        self.reporter = ProgressReporter(self._emit_progress,
+                                         self._emit_chunk_progress)
 
     def _emit_progress(self, done: int, total: int):
         self.progress.emit(int(done), int(total))
+
+    def _emit_chunk_progress(self, done: int, chunk_size: int):
+        self.chunk_progress.emit(int(done), int(chunk_size))
 
     def _emit_phase(self, phase: str):
         self.phase_changed.emit(phase)

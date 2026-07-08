@@ -29,6 +29,14 @@ from app.chatbot_panel import ChatbotOverlay
 from app.i18n import tr, get_lang, set_lang, LANGS, LANG_LABELS
 
 
+# Clip length above which the streaming pipeline actually splits into
+# multiple chunks. Below this threshold the whole video fits in one
+# chunk and the secondary chunk-progress bar would just mirror the
+# main bar 1:1 — we hide it in that case to keep the UI clean.
+# Matches (loosely) fdcore.pipeline._STREAM_CHUNK_SIZE.
+_CHUNK_BAR_THRESHOLD = 200
+
+
 _MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.abspath(os.path.join(_MODULE_DIR, ".."))
 _CACHE_DIR = os.path.join(_PROJECT_ROOT, "cache")
@@ -321,6 +329,18 @@ class MainWindow(QMainWindow):
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
         left_lay.addWidget(self.progress)
+        # Secondary chunk-progress bar. Streaming pipeline emits
+        # chunk_progress events during a run; the UI reveals this
+        # slim second bar only when the clip is long enough to
+        # actually be chunked (>~200 frames). Kept invisible for
+        # short clips so the UI stays clean for typical previews.
+        self.chunk_progress_bar = QProgressBar()
+        self.chunk_progress_bar.setRange(0, 100)
+        self.chunk_progress_bar.setValue(0)
+        self.chunk_progress_bar.setFixedHeight(6)
+        self.chunk_progress_bar.setTextVisible(False)
+        self.chunk_progress_bar.setVisible(False)
+        left_lay.addWidget(self.chunk_progress_bar)
         # Snapshot the default palette so we can restore it after a cancel.
         self._progress_normal_palette = QPalette(self.progress.palette())
         # Soft green for the completion state — visually distinct from
@@ -538,6 +558,7 @@ class MainWindow(QMainWindow):
         self.worker = worker_cls(self.video_path, settings, out_path,
                                  noise_path=noise_path)
         self.worker.progress.connect(self._on_progress)
+        self.worker.chunk_progress.connect(self._on_chunk_progress)
         self.worker.finished_signal.connect(self._on_finished)
         self.worker.error_signal.connect(self._on_error)
         self.worker.noise_ready.connect(self._on_noise_ready)
@@ -546,6 +567,9 @@ class MainWindow(QMainWindow):
         # Reset visual state for the new run (clears any prior cancel state).
         self.progress.setPalette(self._progress_normal_palette)
         self.progress.setValue(0)
+        self.chunk_progress_bar.setValue(0)
+        self.chunk_progress_bar.setVisible(False)
+        self._chunk_bar_decided = False
         self.eta_label.setText("")
         self._last_done = 0
         self._last_total = 0
@@ -630,6 +654,14 @@ class MainWindow(QMainWindow):
     def _on_progress(self, done: int, total: int):
         if total <= 0:
             return
+        # First `_on_progress` of a run gives us the true clip total.
+        # Reveal the chunk bar only when the clip is long enough to
+        # actually be streamed as multiple chunks — otherwise the
+        # chunk bar would just mirror the main bar 1:1 which is
+        # visual noise.
+        if not self._chunk_bar_decided:
+            self.chunk_progress_bar.setVisible(total > _CHUNK_BAR_THRESHOLD)
+            self._chunk_bar_decided = True
         self._last_done = done
         self._last_total = total
         pct = int(done * 100 / total)
@@ -640,8 +672,19 @@ class MainWindow(QMainWindow):
             self.eta_label.setText(
                 f"{done}/{total} | 경과 {elapsed:.0f}s | 남은 시간 ≈ {eta:.0f}s")
 
+    def _on_chunk_progress(self, done: int, chunk_size: int):
+        """Update the slim chunk-progress bar. Fired repeatedly during a
+        single chunk's denoise as MEMFOF grinds through its internal
+        24-frame mini-batches, so this bar cycles 0→100→0→100… while
+        the main bar climbs monotonically."""
+        if chunk_size <= 0:
+            return
+        pct = int(done * 100 / chunk_size)
+        self.chunk_progress_bar.setValue(pct)
+
     def _on_cancelled(self):
         self._set_running(False)
+        self.chunk_progress_bar.setVisible(False)
         elapsed = time.time() - self._t_start
         # Color the chunk red via palette — QSS on QProgressBar would flip
         # the bar to a non-native renderer and shift the percentage text.
@@ -656,6 +699,7 @@ class MainWindow(QMainWindow):
 
     def _on_finished(self, output_path: str):
         self._set_running(False)
+        self.chunk_progress_bar.setVisible(False)
         self.progress.setValue(100)
         elapsed = time.time() - self._t_start
         # Mark the bar visually as "done" — soft green palette + a real
@@ -741,6 +785,7 @@ class MainWindow(QMainWindow):
 
     def _on_error(self, msg: str):
         self._set_running(False)
+        self.chunk_progress_bar.setVisible(False)
         self._log(f"[ERROR] {msg}")
         self.worker = None
         QMessageBox.critical(self, "FlowDenoise", msg)

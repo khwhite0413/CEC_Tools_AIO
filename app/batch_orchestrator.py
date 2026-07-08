@@ -223,6 +223,11 @@ class BatchOrchestrator(QThread):
     """
 
     overall_progress = pyqtSignal(str, int, int, int, int)
+    # Chunk-scoped progress inside one worker call. Only the denoise stage
+    # currently emits this (streaming pipeline sub-batches inside a chunk);
+    # inpaint / upscale workers don't set it. Batch UI reveals a slim
+    # secondary bar on this signal.
+    chunk_progress = pyqtSignal(int, int)
     item_status = pyqtSignal(int, str, str)
     log = pyqtSignal(str)
     error = pyqtSignal(str)
@@ -523,6 +528,11 @@ class BatchOrchestrator(QThread):
             self._cur_stage, self._cur_file_idx, self._cur_file_total,
             int(done), int(total))
 
+    def _slot_on_chunk_progress(self, done: int, chunk_size: int) -> None:
+        # Only the denoise worker emits this; forward as-is. Batch UI
+        # decides visibility (shown during denoise, hidden otherwise).
+        self.chunk_progress.emit(int(done), int(chunk_size))
+
     def _slot_on_finished(self, _path: str) -> None:
         if self._cur_loop is not None:
             self._cur_loop.quit()
@@ -556,6 +566,12 @@ class BatchOrchestrator(QThread):
         # which is the orchestrator (still referenced by the caller).
         # No more chance of a weakref-induced silent disconnect mid-run.
         worker.progress.connect(self._slot_on_progress, Qt.QueuedConnection)
+        # DenoiseWorker exposes chunk_progress; InpaintWorker / UpscaleWorker
+        # don't (they aren't chunk-streamed). hasattr keeps the connect
+        # optional per-worker without needing per-type branches.
+        if hasattr(worker, "chunk_progress"):
+            worker.chunk_progress.connect(
+                self._slot_on_chunk_progress, Qt.QueuedConnection)
         worker.finished_signal.connect(
             self._slot_on_finished, Qt.QueuedConnection)
         worker.error_signal.connect(self._slot_on_error, Qt.QueuedConnection)

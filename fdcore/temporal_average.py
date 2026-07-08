@@ -156,7 +156,10 @@ def _run_memfof(frames, B, H, W, settings, boundaries,
         output[chunk_start:chunk_end] = (weighted_sums / (weight_sums + 1e-8)).cpu()
         weight_maps[chunk_start:chunk_end] = weight_sums.cpu()
         del gpu_buf, chunk_frames, weighted_sums, weight_sums
-        reporter.update(chunk_end, B)
+        # Chunk-scoped: B is the current buffer size (e.g. streaming chunk
+        # of ~200 frames + overlap), not the full clip's total. The
+        # pipeline's streaming loop emits overall progress separately.
+        reporter.update_chunk(chunk_end, B)
 
 
 def _run_raft(frames, B, H, W, settings, boundaries,
@@ -218,7 +221,8 @@ def _run_raft(frames, B, H, W, settings, boundaries,
         output[i:i + 1] = (weighted_sum / (weight_sum + 1e-8)).cpu()
         weight_maps[i:i + 1] = weight_sum.cpu()
         del ref_gpu, ref_orig, weighted_sum, weight_sum
-        reporter.update(i + 1, B)
+        # Chunk-scoped: see _run_memfof's equivalent note.
+        reporter.update_chunk(i + 1, B)
 
 
 def temporal_flow_average(images: torch.Tensor, settings: dict,

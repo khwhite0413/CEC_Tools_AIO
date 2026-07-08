@@ -52,6 +52,15 @@ _COLOR_RUNNING = QColor("#f0a35a")
 _COLOR_DONE    = QColor("#a5d6a7")
 _COLOR_ERROR   = QColor("#e57373")
 
+# Chunk_size threshold below which we treat chunk_progress as "we're
+# actually streaming this clip in multiple chunks" and reveal the slim
+# secondary progress bar. Anything larger is presumed to be a single
+# short-clip pass (chunk_size == clip length) where the extra bar would
+# just mirror the main bar 1:1. Slightly higher than the pipeline's
+# _STREAM_CHUNK_SIZE (200 + 2*window = ~206) so we don't false-hide on
+# boundary clips.
+_BATCH_CHUNK_BAR_THRESHOLD = 250
+
 from app.i18n import tr
 from app.video_player import VideoPlayer
 from app.batch_orchestrator import (BatchOrchestrator, STAGE_INPAINT,
@@ -473,6 +482,17 @@ class BatchPage(QWidget):
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
         run_lay.addWidget(self.progress)
+        # Slim secondary bar for chunk-scoped denoise progress. Reveals
+        # only during the denoise stage of clips long enough to be
+        # streamed as multiple chunks; hidden during inpaint / upscale
+        # stages (which don't chunk) and during short-clip denoise.
+        self.chunk_progress_bar = QProgressBar()
+        self.chunk_progress_bar.setRange(0, 100)
+        self.chunk_progress_bar.setValue(0)
+        self.chunk_progress_bar.setFixedHeight(6)
+        self.chunk_progress_bar.setTextVisible(False)
+        self.chunk_progress_bar.setVisible(False)
+        run_lay.addWidget(self.chunk_progress_bar)
         # Snapshot the default palette so we can restore it on a new
         # run after a previous cancel/error painted the bar red/green.
         # Same pattern as the Denoise tab's progress bar — stylesheet
@@ -875,6 +895,7 @@ class BatchPage(QWidget):
             custom_masks=self._masks,
             parent=self)
         self._orchestrator.overall_progress.connect(self._on_progress)
+        self._orchestrator.chunk_progress.connect(self._on_chunk_progress)
         self._orchestrator.item_status.connect(self._set_item_status)
         self._orchestrator.log.connect(self.log.emit)
         self._orchestrator.error.connect(self._on_error)
@@ -883,6 +904,8 @@ class BatchPage(QWidget):
 
         self._set_running(True)
         self.progress.setValue(0)
+        self.chunk_progress_bar.setValue(0)
+        self.chunk_progress_bar.setVisible(False)
         # Reset visual state from any prior run — green/red palette from
         # the last completion shouldn't bleed into this run, and queue
         # row colours from the previous batch shouldn't either.
@@ -939,6 +962,13 @@ class BatchPage(QWidget):
             stage=stage_label, fname=fname,
             idx=file_idx, total=file_total))
 
+        # Chunk-progress bar is only meaningful during the denoise stage
+        # (inpaint / upscale don't chunk). Hide immediately whenever we
+        # tick into a non-denoise stage; visibility during denoise is
+        # decided per-clip on the first chunk_progress event.
+        if stage != "denoise":
+            self.chunk_progress_bar.setVisible(False)
+
         # Per-clip percentage feeds the queue row's "(NN%)" tail. Pushing
         # it through _paint_running_row() also forces a repaint on every
         # frame-progress signal — between spinner ticks the percentage
@@ -965,8 +995,29 @@ class BatchPage(QWidget):
             pct = (stage_offset + file_offset + frame_progress) * 100.0
             self.progress.setValue(int(max(0, min(100, pct))))
 
+    def _on_chunk_progress(self, done: int, chunk_size: int):
+        """Fires many times per chunk during the denoise stage. Reveal
+        the slim secondary bar only when the current clip is actually
+        multi-chunk — a short clip whose whole run fits in a single
+        chunk shouldn't get the extra visual noise."""
+        if chunk_size <= 0:
+            return
+        # Only meaningful during the denoise stage. On non-denoise stages
+        # the bar was hidden by _on_progress; we still guard here in case
+        # of ordering quirks in the queued signal delivery.
+        if not self.chunk_progress_bar.isVisible():
+            # Cheap heuristic: if chunk_size is small enough that we're
+            # clearly chunking (rather than processing a whole short
+            # clip in one shot), reveal the bar. Matches the Denoise
+            # tab's _CHUNK_BAR_THRESHOLD in spirit.
+            if chunk_size <= _BATCH_CHUNK_BAR_THRESHOLD:
+                self.chunk_progress_bar.setVisible(True)
+        pct = int(done * 100 / chunk_size)
+        self.chunk_progress_bar.setValue(pct)
+
     def _on_error(self, msg: str):
         self._set_running(False)
+        self.chunk_progress_bar.setVisible(False)
         self.status_label.setText(tr("batch_status_error").format(msg=msg))
         self.progress.setPalette(self._progress_cancel_palette)
         self._stop_spinner_and_mark_row(_COLOR_ERROR, tr("batch_status_error")
@@ -976,6 +1027,7 @@ class BatchPage(QWidget):
 
     def _on_cancelled(self):
         self._set_running(False)
+        self.chunk_progress_bar.setVisible(False)
         self.status_label.setText(tr("batch_status_cancelled"))
         # Soft red — matches the Denoise tab's cancel state and our
         # error palette, so the user reads "interrupted" at a glance.
@@ -985,6 +1037,7 @@ class BatchPage(QWidget):
 
     def _on_all_done(self, output_dir: str):
         self._set_running(False)
+        self.chunk_progress_bar.setVisible(False)
         self.progress.setValue(100)
         self.progress.setPalette(self._progress_done_palette)
         self.status_label.setText(tr("batch_status_done").format(

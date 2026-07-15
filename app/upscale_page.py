@@ -23,7 +23,9 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
 
 from app.i18n import tr
 from app.video_player import VideoPlayer
-from app.upscale_worker import UpscaleWorker, MODELS, model_available
+from app.upscale_worker import (UpscaleWorker, MODELS, MODEL_FAMILIES,
+                                 variants_for_family, family_of,
+                                 model_available)
 from app.aspect_ratio_option import AspectRatioOption
 from fdcore.video_io import auto_format_from_codec
 
@@ -194,15 +196,33 @@ class UpscalePage(QWidget):
         basic.setHorizontalSpacing(10)
         basic.setVerticalSpacing(6)
 
+        # Two-step cascading dropdown: family (level 1) → variant (level 2).
+        # `family_combo` picks the model family (OpenProteus / AniToon /
+        # AniSD / ...), `model_combo` (kept as the name so downstream
+        # settings["model"] wiring is unchanged) shows the variants of
+        # that family. Tooltips per-item — hover a variant in the second
+        # dropdown to see its one-line trade-off summary.
+        self.family_combo = QComboBox()
+        for fam_key, fam_info in MODEL_FAMILIES.items():
+            self.family_combo.addItem(tr(fam_info["label_key"]), fam_key)
+        self.family_combo.currentIndexChanged.connect(
+            self._on_family_changed)
+        lbl_family = QLabel(tr("upscale_label_family"))
+        basic.addRow(lbl_family, self.family_combo)
+
         self.model_combo = QComboBox()
-        for key, info in MODELS.items():
-            self.model_combo.addItem(tr(info["label_key"]), key)
+        # model_combo is populated by _on_family_changed. Keep the
+        # `label_model` label as the row header so callers of the
+        # original `upscale_label_model` i18n key still see it.
         self.model_combo.setToolTip(tr("upscale_tooltip_model"))
         self.model_combo.currentIndexChanged.connect(
             lambda _: self._refresh_res_preview())
-        lbl_model = QLabel(tr("upscale_label_model"))
+        lbl_model = QLabel(tr("upscale_label_variant"))
         lbl_model.setToolTip(tr("upscale_tooltip_model"))
         basic.addRow(lbl_model, self.model_combo)
+        # Initial population — pick the first family's variants so the
+        # user sees something before touching anything.
+        self._on_family_changed(0)
 
         # Target resolution: model is fixed 2x; cv2 then resizes the
         # model output to the picked long-edge. 0 = native 2x (no resize).
@@ -494,6 +514,27 @@ class UpscalePage(QWidget):
             if not os.path.exists(candidate):
                 return candidate
             n += 1
+
+    def _on_family_changed(self, _idx: int):
+        """Repopulate the variant dropdown when the family changes.
+
+        Uses Qt.ToolTipRole so each variant carries its own hover
+        tooltip in the dropdown — hovering "Small" shows a different
+        one-liner than hovering "Large" of the same family. This is
+        the "성격 한줄평" the user asked for.
+        """
+        from PyQt5.QtCore import Qt
+        fam_key = self.family_combo.currentData()
+        self.model_combo.blockSignals(True)
+        self.model_combo.clear()
+        for var_key, var_info in variants_for_family(fam_key):
+            self.model_combo.addItem(tr(var_info["label_key"]), var_key)
+            # Attach the trade-off tooltip to this exact combo item.
+            idx = self.model_combo.count() - 1
+            self.model_combo.setItemData(
+                idx, tr(var_info["tooltip_key"]), Qt.ToolTipRole)
+        self.model_combo.blockSignals(False)
+        self._refresh_res_preview()
 
     def _refresh_res_preview(self):
         if self.video_info is None:

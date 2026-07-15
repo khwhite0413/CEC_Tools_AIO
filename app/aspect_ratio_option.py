@@ -16,7 +16,7 @@ owns the toggle widget so the two tabs stay in lockstep without copy-
 pasted UI code.
 """
 
-from PyQt5.QtWidgets import QWidget, QHBoxLayout, QCheckBox
+from PyQt5.QtWidgets import QWidget, QHBoxLayout, QCheckBox, QComboBox
 
 
 _TOOLTIP = (
@@ -27,8 +27,23 @@ _TOOLTIP = (
 )
 
 
+# Canonical aspect-mode keys shared by AspectRatioMode, UpscaleWorker,
+# and fdcore.transcode. UI currently exposes only ("none", "fill") —
+# "crop" and "auto" are retained in the internal geometry solver for
+# backward compat with the single Upscale tab's legacy `force_16_9`
+# checkbox (which still maps to a mode string via the compat shim) but
+# are not offered to Batch-tab users because Fill Frame is the only
+# semantic that reliably reaches the exact target resolution.
+ASPECT_MODES = ("none", "fill")
+
+
 class AspectRatioOption(QWidget):
-    """Single-checkbox widget — shared instance pattern between tabs."""
+    """Single-checkbox widget — used by the single Upscale tab.
+
+    Kept as a plain crop-only checkbox for backward compatibility with the
+    Upscale page. The Batch tab uses `AspectRatioMode` (below) instead so
+    it can offer fill / auto for pass-through transcode workflows.
+    """
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -43,3 +58,51 @@ class AspectRatioOption(QWidget):
 
     def enabled(self) -> bool:
         return self.check.isChecked()
+
+    def mode(self) -> str:
+        """Adapter so callers that only see this class still get the
+        canonical mode string. Checkbox maps to crop-or-none."""
+        return "crop" if self.check.isChecked() else "none"
+
+
+class AspectRatioMode(QWidget):
+    """Four-mode aspect selector used by the Batch tab's Final Output group.
+
+    Modes:
+        none — passthrough, keep source aspect
+        crop — center-crop to 16:9 (landscape) / 9:16 (portrait); source
+               must be WIDER than target — otherwise no-op
+        fill — letterbox (black bars) to 16:9 / 9:16; source must be
+               NARROWER than target — otherwise no-op
+        auto — pick crop or fill per clip based on source dimensions
+
+    Implementation lives in `UpscaleWorker` (when upscale is the last
+    stage) and `fdcore.transcode.run_transcode_only` (for the standalone
+    pass-through path).
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        self.combo = QComboBox()
+        # The user-facing labels are set in batch_page.py via i18n.tr()
+        # (this widget stays i18n-free so it can be reused). Batch page
+        # populates the combo after construction.
+        layout.addWidget(self.combo, 1)
+
+    def populate(self, labels: dict) -> None:
+        """Fill the combo with `{mode_key: display_label}` — called by
+        the batch page so translated strings live at the callsite."""
+        self.combo.clear()
+        for key in ASPECT_MODES:
+            self.combo.addItem(labels.get(key, key), key)
+
+    def mode(self) -> str:
+        return self.combo.currentData() or "none"
+
+    def enabled(self) -> bool:
+        """Compatibility shim mirroring AspectRatioOption — True unless
+        mode is 'none'. Any non-none mode reads as 'aspect enforcement on'."""
+        return self.mode() != "none"

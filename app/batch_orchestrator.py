@@ -48,11 +48,12 @@ import cv2
 import numpy as np
 from PyQt5.QtCore import QEventLoop, QObject, QThread, Qt, pyqtSignal
 
-from fdcore.video_io import VideoInfo
+from fdcore.transcode import is_noop as _final_is_noop
 from vdcore.config import get_device
 from app.inpaint_worker import InpaintWorker
 from app.upscale_worker import UpscaleWorker
 from app.workers import DenoiseWorker
+from app.transcode_worker import TranscodeWorker
 
 
 _MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -67,6 +68,10 @@ BATCH_DENOISE_CACHE = os.path.join(_CACHE_DIR, "batch_denoise")
 STAGE_INPAINT = "inpaint"
 STAGE_DENOISE = "denoise"
 STAGE_UPSCALE = "upscale"
+# Virtual "stage" — only appended when no processing stage will apply
+# the Final Output group's params itself. Concretely: upscale is
+# disabled AND at least one Final Output param would change the file.
+STAGE_TRANSCODE = "transcode"
 
 # Hard cap on `_2`, `_3` … suffix probing. Realistic batches never come
 # close, but a misconfigured / dirty target dir could otherwise spin the
@@ -236,6 +241,7 @@ class BatchOrchestrator(QThread):
 
     def __init__(self, files: Sequence[str], inpaint_settings: dict,
                  denoise_settings: dict, upscale_settings: dict,
+                 final_settings: Optional[dict] = None,
                  output_dir_base: Optional[str] = None,
                  custom_masks: Optional[dict] = None,
                  parent: Optional[QObject] = None):
@@ -244,6 +250,15 @@ class BatchOrchestrator(QThread):
         self._inpaint_settings = dict(inpaint_settings or {})
         self._denoise_settings = dict(denoise_settings or {})
         self._upscale_settings = dict(upscale_settings or {})
+        # Final Output group — batch-wide codec/fps/aspect/resize.
+        # Applied by whichever stage ends up terminal:
+        #   - upscale enabled → injected into UpscaleWorker.settings
+        #   - upscale disabled + change vs source → appended as a
+        #     TranscodeWorker step after the last processing stage
+        #   - all stages off + change vs source → TranscodeWorker on
+        #     source directly
+        # Missing keys resolve to sensible pass-through defaults.
+        self._final_settings = dict(final_settings or {})
         # Optional override for the final output base folder. When set,
         # `<base>/{yymmdd}_result/` is used; when None, falls back to
         # the project's output/ directory (same as the older default).
@@ -269,6 +284,12 @@ class BatchOrchestrator(QThread):
         self._cur_file_total: int = 0
         self._cur_loop: Optional[QEventLoop] = None
         self._cur_result: dict = {"error": None, "cancelled": False}
+        # Per-stage settings snapshot, refreshed inside `_run_inner`
+        # right before invoking that stage's `build`. Lets the builder
+        # methods reach the CURRENT stage's merged settings (upscale +
+        # Final Output injections) rather than the raw self.*_settings
+        # dicts, which don't carry the injections.
+        self._current_stage_settings: Optional[dict] = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -318,16 +339,49 @@ class BatchOrchestrator(QThread):
                 "build": self._build_denoise_worker,
             })
         if self._upscale_settings.get("enabled", True):
+            # Upscale is always terminal when enabled — inject Final
+            # Output params directly into its settings so the worker
+            # applies aspect / resize / fps / codec inline (single encode).
+            merged = dict(self._upscale_settings)
+            fin = self._final_settings
+            merged["aspect_mode"] = fin.get("aspect_mode", "none")
+            merged["target_long_edge"] = int(fin.get("target_long_edge", 0) or 0)
+            merged["fps_override"] = float(fin.get("fps_override", 0.0) or 0.0)
+            # Final codec wins over the per-stage cache codec on upscale
+            # (upscale-terminal case). The per-stage codec dropdown on
+            # the upscale group is preserved in UI for future non-
+            # terminal use but is effectively dead code today.
+            if fin.get("output_format"):
+                merged["output_format"] = fin["output_format"]
+                merged["prores_profile"] = fin.get(
+                    "prores_profile", merged.get("prores_profile", "4444"))
             stages.append({
                 "name": STAGE_UPSCALE,
                 "label": "업스케일",
-                "settings": self._upscale_settings,
-                # Upscale never has its own cache — when it's an
-                # intermediate stage (no canonical successor exists,
-                # but in our pipeline it's always last when enabled),
-                # this branch is unreachable.
+                "settings": merged,
                 "cache_dir": None,
                 "build": self._build_upscale_worker,
+            })
+
+        # Append a transcode step iff:
+        #   - upscale is disabled (would otherwise apply final params), and
+        #   - final settings would actually change the source
+        # The change check uses the first queued clip as representative,
+        # matching what BatchPage._run displays. This decouples the UI's
+        # provisional _active_stages hint from the orchestrator's actual
+        # decision — both must agree, so the check runs the same is_noop.
+        needs_transcode = (
+            not self._upscale_settings.get("enabled", True)
+            and self._files
+            and not _final_is_noop(self._files[0], self._final_settings)
+        )
+        if needs_transcode:
+            stages.append({
+                "name": STAGE_TRANSCODE,
+                "label": "포맷 정규화",
+                "settings": dict(self._final_settings),
+                "cache_dir": None,
+                "build": self._build_transcode_worker,
             })
 
         if not stages:
@@ -403,6 +457,7 @@ class BatchOrchestrator(QThread):
                         f"[{stage_idx + 1}/{len(stages)} {stage['label']}] "
                         f"{i}/{total} · {os.path.basename(src)}")
 
+                    self._current_stage_settings = stage["settings"]
                     worker = stage["build"](src, out)
                     if worker is None:
                         # Worker construction failed — already-emitted
@@ -504,7 +559,15 @@ class BatchOrchestrator(QThread):
         return DenoiseWorker(src, self._denoise_settings, out)
 
     def _build_upscale_worker(self, src: str, out: str):
-        return UpscaleWorker(src, out, self._upscale_settings, self._device)
+        # settings passed here is the stage's `merged` dict (upscale +
+        # Final Output injections), not the raw self._upscale_settings.
+        # Look it up from the current-stage record so injections stick.
+        settings = self._current_stage_settings or self._upscale_settings
+        return UpscaleWorker(src, out, settings, self._device)
+
+    def _build_transcode_worker(self, src: str, out: str):
+        settings = self._current_stage_settings or self._final_settings
+        return TranscodeWorker(src, out, settings)
 
     # ------------------------------------------------------------------
     # Worker driver

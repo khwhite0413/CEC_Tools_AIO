@@ -58,8 +58,8 @@ _STRINGS = {
                                 "en": "1) Inpaint (watermark removal)"},
     "batch_section_denoise":  {"ko": "2) 디노이즈 (시간적 광학흐름)",
                                 "en": "2) Denoise (temporal optical flow)"},
-    "batch_section_upscale":  {"ko": "3) 업스케일 (최종 출력)",
-                                "en": "3) Upscale (final output)"},
+    "batch_section_upscale":  {"ko": "3) 업스케일",
+                                "en": "3) Upscale"},
     "batch_label_preset":     {"ko": "프리셋", "en": "Preset"},
     "batch_label_mask_dilation": {"ko": "마스크 확장 (Dreamina 자동)",
                                     "en": "Mask expansion (Dreamina auto)"},
@@ -104,7 +104,7 @@ _STRINGS = {
     "batch_label_window":     {"ko": "Window size", "en": "Window size"},
     "batch_label_model":      {"ko": "모델", "en": "Model"},
     "batch_label_target":     {"ko": "출력 해상도", "en": "Target resolution"},
-    "batch_target_native":    {"ko": "원본 × 2 (Native)", "en": "Source × 2 (Native)"},
+    "batch_target_native":    {"ko": "그대로 (Native)", "en": "Native (as-is)"},
     "batch_label_codec":      {"ko": "출력 코덱", "en": "Output codec"},
     "batch_codec_h264":       {"ko": "H.264 (MP4)", "en": "H.264 (MP4)"},
     "batch_codec_prores":     {"ko": "ProRes (MOV)", "en": "ProRes (MOV)"},
@@ -136,6 +136,36 @@ _STRINGS = {
     "batch_confirm_stop":     {"ko": "정말 중지하시겠습니까? 진행 중인 작업이 취소됩니다.",
                                 "en": "Stop the batch? Current work will be cancelled."},
 
+    # --- Batch tab: Final Output group (always-active) ---
+    "batch_section_final":    {"ko": "최종 출력",
+                                "en": "Final Output"},
+    "batch_label_aspect_mode": {"ko": "비율 강제", "en": "Force aspect"},
+    "batch_aspect_none":      {"ko": "없음", "en": "None"},
+    "batch_aspect_fill":      {"ko": "16:9·9:16 자동 (Fill Frame)",
+                                "en": "16:9·9:16 auto (Fill Frame)"},
+    "batch_tooltip_aspect_mode": {
+        "ko": ("<b>없음</b>: 원본 비율 유지<br>"
+               "<b>Fill Frame</b>: Premiere Fill Frame 과 동일. "
+               "타겟 프레임을 완전히 덮도록 확대 후 초과분 크롭. "
+               "정확한 타겟 해상도 + 검은 띠 없음."),
+        "en": ("<b>None</b>: keep source aspect<br>"
+               "<b>Fill Frame</b>: Premiere's Fill Frame — scale to cover "
+               "the target frame, then crop excess. Reaches exact target "
+               "resolution with no black bars.")},
+    "batch_label_final_codec": {"ko": "최종 코덱", "en": "Final codec"},
+    "batch_fps_snap_hint":    {"ko": "선택 클립: {src:.2f} → {snapped:.2f} (스냅됨)",
+                                "en": "Selected clip: {src:.2f} → {snapped:.2f} (snapped)"},
+    "batch_fps_snap_empty":   {"ko": "선택 클립 없음",
+                                "en": "No clip selected"},
+    "batch_fps_snap_multi":   {"ko": "다수 클립 ({n}개) — 첫 항목 기준: {src:.2f} → {snapped:.2f}",
+                                "en": "{n} clips — first: {src:.2f} → {snapped:.2f}"},
+    "batch_no_changes":       {
+        "ko": ("실행할 변경 사항이 없습니다. 처리 단계를 활성화하거나 "
+               "최종 출력 파라미터를 소스와 다르게 설정하세요."),
+        "en": ("Nothing to do. Enable at least one stage or change a "
+               "Final Output parameter away from the source's own values.")},
+    "batch_stage_transcode":  {"ko": "포맷 정규화", "en": "Transcode"},
+
     # Upscale page
     "upscale_section_params":  {"ko": "Upscale 파라미터",
                                  "en": "Upscale parameters"},
@@ -146,6 +176,130 @@ _STRINGS = {
     "upscale_model_openproteus": {
         "ko": "OpenProteus 2x (Compact)",
         "en": "OpenProteus 2x (Compact)"},
+
+    # --- Model family labels (Level 1 dropdown) ---
+    "upscale_family_openproteus": {
+        "ko": "OpenProteus (일반)",
+        "en": "OpenProteus (general)"},
+    "upscale_family_anitoon": {
+        "ko": "AniToon (90s·2000s 카툰/애니 복원)",
+        "en": "AniToon (90s/2000s cartoon & anime restore)"},
+    "upscale_family_anisd": {
+        "ko": "AniSD (SD 애니 DVD/WEB)",
+        "en": "AniSD (SD anime DVD/WEB)"},
+    "upscale_family_ani4k_v2": {
+        "ko": "Ani4K v2 (모던 애니 → 2K/4K)",
+        "en": "Ani4K v2 (modern anime → 2K/4K)"},
+    "upscale_family_aniscale2": {
+        "ko": "AniScale 2 (범용 애니, 블러/DoF/압축)",
+        "en": "AniScale 2 (versatile anime, blur/DoF/compression)"},
+
+    # --- Variant labels (Level 2 dropdown) + tooltips ---
+    "upscale_variant_openproteus_2x": {
+        "ko": "2x Compact", "en": "2x Compact"},
+    "upscale_variant_openproteus_2x_tt": {
+        "ko": "일반 실사 영상용 2x. 빠른 Compact 아키텍처.",
+        "en": "General-purpose 2x. Fast Compact arch."},
+
+    "upscale_variant_anitoon_small": {
+        "ko": "Small · 2x · 9MB (가장 빠름, 저자 기본 추천)",
+        "en": "Small · 2x · 9MB (fastest, author-recommended default)"},
+    "upscale_variant_anitoon_small_tt": {
+        "ko": "가벼운 RealPLKSR-S. 대부분 케이스에 충분하고 빠름.",
+        "en": "Lightweight RealPLKSR-S. Enough for most cases; fastest."},
+    "upscale_variant_anitoon_normal": {
+        "ko": "Normal · 2x · 30MB",
+        "en": "Normal · 2x · 30MB"},
+    "upscale_variant_anitoon_normal_tt": {
+        "ko": "표준 RealPLKSR. 소스가 좀 더 힘들 때.",
+        "en": "Standard RealPLKSR. When the source needs more punch."},
+    "upscale_variant_anitoon_large": {
+        "ko": "Large · 2x · 66MB (최고 품질)",
+        "en": "Large · 2x · 66MB (best quality)"},
+    "upscale_variant_anitoon_large_tt": {
+        "ko": "무거운 RealPLKSR-L. 최고 품질, VRAM 사용량 증가.",
+        "en": "Heavy RealPLKSR-L. Best quality, more VRAM."},
+
+    "upscale_variant_anisd_base": {
+        "ko": "Base · 2x (RealPLKSR)",
+        "en": "Base · 2x (RealPLKSR)"},
+    "upscale_variant_anisd_base_tt": {
+        "ko": "일반 SD 애니용 기본 모델.",
+        "en": "General SD anime baseline."},
+    "upscale_variant_anisd_ac": {
+        "ko": "AC · 2x (Anti-Compression, 저자 추천)",
+        "en": "AC · 2x (Anti-Compression, author-recommended)"},
+    "upscale_variant_anisd_ac_tt": {
+        "ko": "Anti-Compression 튜닝. 압축 심한 WEB 소스에 강함.",
+        "en": "Anti-Compression tuning. Strong on heavily compressed WEB."},
+    "upscale_variant_anisd_dc": {
+        "ko": "DC · 2x (Detail-Compression)",
+        "en": "DC · 2x (Detail-Compression)"},
+    "upscale_variant_anisd_dc_tt": {
+        "ko": "Detail-Compression 변형. 소스 상태 양호할 때 시험.",
+        "en": "Detail-Compression variant. Try on cleaner sources."},
+
+    "upscale_variant_ani4k_v2_compact": {
+        "ko": "Compact · 2x · 2.4MB",
+        "en": "Compact · 2x · 2.4MB"},
+    "upscale_variant_ani4k_v2_compact_tt": {
+        "ko": "표준 Compact. 품질 우선.",
+        "en": "Standard Compact. Quality-first."},
+    "upscale_variant_ani4k_v2_ultracompact": {
+        "ko": "UltraCompact · 2x · 1.2MB (매우 빠름)",
+        "en": "UltraCompact · 2x · 1.2MB (very fast)"},
+    "upscale_variant_ani4k_v2_ultracompact_tt": {
+        "ko": "UltraCompact. 품질 소폭 하락, 속도 대폭 상승.",
+        "en": "UltraCompact. Small quality drop, big speed win."},
+
+    "upscale_variant_aniscale2_compact_s": {
+        "ko": "Compact-S · 2x · 2.4MB (최속)",
+        "en": "Compact-S · 2x · 2.4MB (fastest)"},
+    "upscale_variant_aniscale2_compact_s_tt": {
+        "ko": "가벼운 Compact 변형. 최속 옵션.",
+        "en": "Lightweight Compact variant. Fastest option."},
+    "upscale_variant_aniscale2_omni": {
+        "ko": "OmniSR · 2x · 3.4MB (저자 primary 추천)",
+        "en": "OmniSR · 2x · 3.4MB (author's primary pick)"},
+    "upscale_variant_aniscale2_omni_tt": {
+        "ko": "OmniSR 아키텍처. 저자가 primary 로 훈련한 모델.",
+        "en": "OmniSR arch. Author's primary trained variant."},
+    "upscale_variant_aniscale2_ditn": {
+        "ko": "DITN · 2x · 1.7MB",
+        "en": "DITN · 2x · 1.7MB"},
+    "upscale_variant_aniscale2_ditn_tt": {
+        "ko": "DITN 아키텍처 변형. 가벼움.",
+        "en": "DITN arch variant. Lightweight."},
+    "upscale_variant_aniscale2_esrgan_lite": {
+        "ko": "ESRGAN Lite · 2x · 20MB",
+        "en": "ESRGAN Lite · 2x · 20MB"},
+    "upscale_variant_aniscale2_esrgan_lite_tt": {
+        "ko": "ESRGAN Lite. 클래식 아키텍처의 경량 버전.",
+        "en": "ESRGAN Lite. Classic arch, lightweight build."},
+    "upscale_variant_aniscale2_esrgan": {
+        "ko": "ESRGAN · 2x · 67MB (무거움)",
+        "en": "ESRGAN · 2x · 67MB (heavy)"},
+    "upscale_variant_aniscale2_esrgan_tt": {
+        "ko": "풀 ESRGAN. 무겁지만 클래식 품질.",
+        "en": "Full ESRGAN. Heavy but classic quality."},
+    "upscale_variant_aniscale2_swinir": {
+        "ko": "SwinIR · 2x · 17MB (트랜스포머, 느림)",
+        "en": "SwinIR · 2x · 17MB (transformer, slow)"},
+    "upscale_variant_aniscale2_swinir_tt": {
+        "ko": "SwinIR 트랜스포머. 느리지만 고품질.",
+        "en": "SwinIR transformer. Slow but high quality."},
+    "upscale_variant_aniscale2_refiner": {
+        "ko": "Refiner · 1x · 2.4MB (⚠️ 업스케일 안함 · 라인아트 리파인)",
+        "en": "Refiner · 1x · 2.4MB (⚠️ no upscale · line-art refinement)"},
+    "upscale_variant_aniscale2_refiner_tt": {
+        "ko": ("1x 리파이너 — 사이즈 그대로, 라인아트/샤프니스 정리만. "
+               "원래는 다른 업스케일 모델의 전/후 처리용."),
+        "en": ("1x refiner — no size change, just line-art / sharpness "
+               "cleanup. Meant to precede or follow another upscaler.")},
+
+    # Family / variant dropdown headers
+    "upscale_label_family": {"ko": "모델 계열", "en": "Model family"},
+    "upscale_label_variant": {"ko": "세부 모델", "en": "Variant"},
     "upscale_no_preview":      {"ko": "비디오를 불러오면 출력 해상도가 표시됩니다.",
                                  "en": "Load a video to see the output resolution."},
     # Plain-language preview. The user sees the input, the model's

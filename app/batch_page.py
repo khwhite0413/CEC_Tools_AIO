@@ -24,7 +24,7 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                               QLineEdit, QMenu, QShortcut, QCheckBox)
 
 from app.mask_editor_dialog import MaskEditorDialog
-from app.aspect_ratio_option import AspectRatioOption
+from app.aspect_ratio_option import AspectRatioMode
 
 
 # Spinner used in queue-row "running" state. Braille block animation
@@ -65,24 +65,29 @@ from app.i18n import tr
 from app.video_player import VideoPlayer
 from app.batch_orchestrator import (BatchOrchestrator, STAGE_INPAINT,
                                      STAGE_DENOISE, STAGE_UPSCALE,
+                                     STAGE_TRANSCODE,
                                      _compute_dreamina_mask)
 
 
 def _probe_meta(path: str) -> str:
     """Probe a video for a short single-line metadata string.
 
-    Uses fdcore.VideoInfo so the surfaced fps matches what the workers
-    will *actually* use (effective_fps post-snap, not the raw container
-    metadata). Falls back silently if probing fails — the user still
-    gets the filename + status, just no resolution.
+    Surfaces the RAW container fps (info.fps) so the queue row reflects
+    what the file actually is — not what the pipeline will produce after
+    snapping. The snapped/target fps preview lives under the Final Output
+    section instead, so users see both: "this file is 31.24fps" in the
+    queue, "→ will encode as 30fps" in the settings.
+
+    Falls back silently if probing fails — the user still gets the
+    filename + status, just no resolution.
     """
     try:
         from fdcore.video_io import VideoInfo
         info = VideoInfo(path)
-        eff = getattr(info, "effective_fps", info.fps)
+        raw_fps = info.fps or 0.0
         dur = info.duration if info.duration else 0.0
         audio = "audio" if info.has_audio else "no audio"
-        return (f"{info.width}×{info.height} @ {eff:.2f}fps · "
+        return (f"{info.width}×{info.height} @ {raw_fps:.2f}fps · "
                 f"{info.frame_count}f · {dur:.1f}s · {audio}")
     except Exception:
         return ""
@@ -418,58 +423,117 @@ class BatchPage(QWidget):
         lay.addWidget(self.den_box)
 
         # ----- Stage 3: Upscale -----
+        # Only upscale-specific knobs live here now (model + batch size +
+        # cache codec). Target resolution / aspect / fps / final codec
+        # all moved to the always-active Final Output group below so a
+        # pass-through pipeline (all 3 stages off) can still normalize
+        # container format.
         self.ups_box = QGroupBox(tr("batch_section_upscale"))
         self.ups_box.setCheckable(True)
         self.ups_box.setChecked(True)
         ups_lay = QFormLayout(self.ups_box)
         ups_lay.setSpacing(6)
+        # Cascading family → variant dropdowns. Same widget names /
+        # semantics as upscale_page.py so `_gather_settings` and the
+        # orchestrator both continue to see `settings["model"]` = the
+        # variant_key (canonical downstream identifier).
+        from app.upscale_worker import MODEL_FAMILIES, variants_for_family
+        self._ups_families = MODEL_FAMILIES
+        self._ups_variants_for_family = variants_for_family
+
+        self.ups_family = QComboBox()
+        for fam_key, fam_info in MODEL_FAMILIES.items():
+            self.ups_family.addItem(tr(fam_info["label_key"]), fam_key)
+        self.ups_family.currentIndexChanged.connect(self._on_ups_family_changed)
+        ups_lay.addRow(QLabel(tr("upscale_label_family") + ":"),
+                       self.ups_family)
+
         self.ups_model = QComboBox()
-        self.ups_model.addItem(tr("upscale_model_openproteus"), "openproteus_2x")
-        ups_lay.addRow(QLabel(tr("batch_label_model") + ":"), self.ups_model)
-        self.ups_target = QComboBox()
-        self.ups_target.addItem(tr("batch_target_native"), 0)
-        self.ups_target.addItem("HD (1280)",  1280)
-        self.ups_target.addItem("FHD (1920)", 1920)
-        self.ups_target.addItem("QHD (2560)", 2560)
-        self.ups_target.addItem("4K UHD (3840)", 3840)
-        self.ups_target.addItem("8K UHD (7680)", 7680)
-        ups_lay.addRow(QLabel(tr("batch_label_target") + ":"), self.ups_target)
-        # 16:9 / 9:16 forced-aspect toggle. Shared widget with the single
-        # Upscale tab; the worker reads `force_16_9` from settings.
-        self.ups_aspect_force = AspectRatioOption()
-        ups_lay.addRow("", self.ups_aspect_force)
+        # Populated by _on_ups_family_changed. Per-item tooltips carry
+        # the variant's trade-off summary (hover on a dropdown entry).
+        ups_lay.addRow(QLabel(tr("upscale_label_variant") + ":"),
+                       self.ups_model)
+        self._on_ups_family_changed(0)
         self.ups_batch_frames = QSpinBox()
         self.ups_batch_frames.setRange(0, 5000)
         self.ups_batch_frames.setValue(0)
         self.ups_batch_frames.setToolTip(tr("batch_tooltip_batch_frames"))
         ups_lay.addRow(QLabel(tr("batch_label_batch_frames") + ":"),
                        self.ups_batch_frames)
-        # FPS override row — Auto checkbox + standard-rate dropdown.
-        # Mirrors the single-tab pattern in upscale_page.py. The
-        # batch_orchestrator forwards `fps_override` straight into
-        # UpscaleWorker.settings, where 0.0 means "use detected".
-        ups_fps_row = QWidget()
-        ups_fps_h = QHBoxLayout(ups_fps_row)
-        ups_fps_h.setContentsMargins(0, 0, 0, 0)
-        ups_fps_h.setSpacing(8)
-        self.ups_fps_auto = QCheckBox(tr("label_fps_auto"))
-        self.ups_fps_auto.setChecked(True)
-        self.ups_fps_auto.setToolTip(tr("tooltip_fps_override"))
-        self.ups_fps_override = QComboBox()
-        for value, text in _STANDARD_FPS_OPTIONS:
-            self.ups_fps_override.addItem(text, value)
-        self.ups_fps_override.setCurrentIndex(
-            _STANDARD_FPS_OPTIONS.index((24.0, "24")))
-        self.ups_fps_override.setEnabled(False)
-        self.ups_fps_override.setToolTip(tr("tooltip_fps_override"))
-        self.ups_fps_auto.toggled.connect(
-            lambda checked: self.ups_fps_override.setEnabled(not checked))
-        ups_fps_h.addWidget(self.ups_fps_auto)
-        ups_fps_h.addWidget(self.ups_fps_override, 1)
-        ups_lay.addRow(QLabel(tr("label_fps_override") + ":"), ups_fps_row)
         self.ups_codec = _CodecCard("upscale")
         ups_lay.addRow(self.ups_codec)
         lay.addWidget(self.ups_box)
+
+        # ----- Final Output (always active) -----
+        # Applies regardless of which processing stages are enabled. When
+        # all three are OFF, this section alone drives a stand-alone
+        # ffmpeg pass (TranscodeWorker) so the batch tab doubles as an
+        # AME-style container / fps / aspect normalizer.
+        self.fin_box = QGroupBox(tr("batch_section_final"))
+        fin_lay = QFormLayout(self.fin_box)
+        fin_lay.setSpacing(6)
+
+        # Aspect mode — 4-way combobox. Batch-page owns the translated
+        # labels; the widget itself stays i18n-free.
+        self.fin_aspect = AspectRatioMode()
+        self.fin_aspect.populate({
+            "none": tr("batch_aspect_none"),
+            "fill": tr("batch_aspect_fill"),
+        })
+        self.fin_aspect.setToolTip(tr("batch_tooltip_aspect_mode"))
+        fin_lay.addRow(QLabel(tr("batch_label_aspect_mode") + ":"),
+                       self.fin_aspect)
+
+        # Output resolution (formerly Stage 3's `ups_target`). "Native"
+        # maps to 0 = model output as-is (or source-as-is on transcode-
+        # only path).
+        self.fin_target = QComboBox()
+        self.fin_target.addItem(tr("batch_target_native"), 0)
+        self.fin_target.addItem("HD (1280)",  1280)
+        self.fin_target.addItem("FHD (1920)", 1920)
+        self.fin_target.addItem("QHD (2560)", 2560)
+        self.fin_target.addItem("4K UHD (3840)", 3840)
+        self.fin_target.addItem("8K UHD (7680)", 7680)
+        fin_lay.addRow(QLabel(tr("batch_label_target") + ":"),
+                       self.fin_target)
+
+        # FPS Auto + manual dropdown + snapped-fps preview label.
+        fin_fps_row = QWidget()
+        fin_fps_h = QHBoxLayout(fin_fps_row)
+        fin_fps_h.setContentsMargins(0, 0, 0, 0)
+        fin_fps_h.setSpacing(8)
+        self.fin_fps_auto = QCheckBox(tr("label_fps_auto"))
+        self.fin_fps_auto.setChecked(True)
+        self.fin_fps_auto.setToolTip(tr("tooltip_fps_override"))
+        self.fin_fps_override = QComboBox()
+        for value, text in _STANDARD_FPS_OPTIONS:
+            self.fin_fps_override.addItem(text, value)
+        self.fin_fps_override.setCurrentIndex(
+            _STANDARD_FPS_OPTIONS.index((24.0, "24")))
+        self.fin_fps_override.setEnabled(False)
+        self.fin_fps_override.setToolTip(tr("tooltip_fps_override"))
+        self.fin_fps_auto.toggled.connect(
+            lambda checked: self.fin_fps_override.setEnabled(not checked))
+        self.fin_fps_auto.toggled.connect(self._refresh_fps_snap_label)
+        fin_fps_h.addWidget(self.fin_fps_auto)
+        fin_fps_h.addWidget(self.fin_fps_override, 1)
+        fin_lay.addRow(QLabel(tr("label_fps_override") + ":"), fin_fps_row)
+
+        # Live snap-preview: "선택 클립: 24.04 → 24.00 (스냅됨)". Updated
+        # on queue selection change + on Auto toggle. Hidden when the
+        # user picks a manual override (irrelevant then).
+        self.fin_fps_snap = QLabel(tr("batch_fps_snap_empty"))
+        self.fin_fps_snap.setStyleSheet(
+            "color: rgba(170,174,190,180); font-size: 9pt;")
+        fin_lay.addRow("", self.fin_fps_snap)
+
+        # Final output codec — separate from per-stage cache codecs.
+        # Applied by the last-active worker (upscale when enabled) or by
+        # TranscodeWorker (upscale disabled). Per-stage cache codecs
+        # above still control intermediate cache format.
+        self.fin_codec = _CodecCard("final")
+        fin_lay.addRow(self.fin_codec)
+        lay.addWidget(self.fin_box)
 
         # ----- Run / status -----
         self.run_box = QGroupBox("")
@@ -525,6 +589,11 @@ class BatchPage(QWidget):
     # Queue management
     # ------------------------------------------------------------------
     def _add_files(self, paths: List[str]):
+        # Single choke point for all add paths (button, drop on queue,
+        # drop on page). Gate here so the running orchestrator can't be
+        # blindsided by a queue that mutates under it.
+        if self._is_running():
+            return
         added = 0
         for p in paths:
             p = os.path.abspath(p)
@@ -581,6 +650,12 @@ class BatchPage(QWidget):
     # Custom mask editing (per-clip override of the auto-Dreamina preset)
     # ------------------------------------------------------------------
     def _show_queue_menu(self, pos):
+        # Mask edit / remove mutates self._masks which the running
+        # orchestrator has already snapshotted — but if the user re-
+        # opened the menu during a run they'd expect the change to
+        # take effect. Cleaner to just refuse the menu mid-run.
+        if self._is_running():
+            return
         item = self.queue_list.itemAt(pos)
         if item is None:
             return
@@ -670,6 +745,7 @@ class BatchPage(QWidget):
         STAGE_INPAINT: "batch_stage_inpaint",
         STAGE_DENOISE: "batch_stage_denoise",
         STAGE_UPSCALE: "batch_stage_upscale",
+        STAGE_TRANSCODE: "batch_stage_transcode",
     }
 
     def _set_item_status(self, idx: int, status_key: str, payload: str):
@@ -753,6 +829,7 @@ class BatchPage(QWidget):
             # Nothing selected — no clip to preview, drop any overlay
             # left over from the previous selection.
             self.player.clear_overlay()
+            self._refresh_fps_snap_label()
             return
         idx = self.queue_list.row(sel[0])
         if 0 <= idx < len(self._files):
@@ -764,6 +841,60 @@ class BatchPage(QWidget):
             # layer for the A-key toggle. Custom mask wins; otherwise
             # compute Dreamina auto-preset with the current dilation.
             self._refresh_preview_mask()
+        self._refresh_fps_snap_label()
+
+    def _refresh_fps_snap_label(self, *_args):
+        """Recompute the snap-preview label under the FPS row.
+
+        Only meaningful when Auto is checked — a manual fps override
+        renders the snap value moot. Called on queue-selection change
+        and on the Auto toggle.
+        """
+        # Manual mode: hide the hint.
+        if not self.fin_fps_auto.isChecked():
+            self.fin_fps_snap.setVisible(False)
+            return
+        self.fin_fps_snap.setVisible(True)
+        sel_paths = [self._files[self.queue_list.row(it)]
+                     for it in self.queue_list.selectedItems()
+                     if 0 <= self.queue_list.row(it) < len(self._files)]
+        if not sel_paths:
+            self.fin_fps_snap.setText(tr("batch_fps_snap_empty"))
+            return
+        # Probe first selected clip only. Multi-select shows the count
+        # so the user knows the label refers to a single representative.
+        try:
+            from fdcore.video_io import VideoInfo
+            info = VideoInfo(sel_paths[0])
+            src_fps = float(info.fps or 0.0)
+            snapped = float(info.effective_fps or src_fps)
+        except Exception:
+            self.fin_fps_snap.setText(tr("batch_fps_snap_empty"))
+            return
+        if len(sel_paths) > 1:
+            self.fin_fps_snap.setText(tr("batch_fps_snap_multi").format(
+                n=len(sel_paths), src=src_fps, snapped=snapped))
+        else:
+            self.fin_fps_snap.setText(tr("batch_fps_snap_hint").format(
+                src=src_fps, snapped=snapped))
+
+    def _is_final_nontrivial(self, final: dict) -> bool:
+        """Would the Final Output group cause the transcode step to
+        actually change something? Used by _run to decide whether to
+        append TranscodeWorker when upscale is disabled.
+
+        Uses the first queued clip as a representative source so a batch
+        of similar-format clips gets a consistent decision.
+        """
+        if not self._files:
+            return False
+        try:
+            from fdcore.transcode import is_noop
+            return not is_noop(self._files[0], final)
+        except Exception:
+            # If probing fails, assume changes are needed (safer than
+            # silently skipping a transcode the user asked for).
+            return True
 
     def _refresh_preview_mask(self):
         """Recompute the overlay mask for whichever queue row is
@@ -802,22 +933,40 @@ class BatchPage(QWidget):
     # ------------------------------------------------------------------
     # Run / stop
     # ------------------------------------------------------------------
+    def _on_ups_family_changed(self, _idx: int):
+        """Repopulate the upscale variant dropdown when the family
+        changes. Each variant entry carries a Qt.ToolTipRole so
+        hovering an item in the dropdown surfaces its per-variant
+        one-line trade-off summary."""
+        fam_key = self.ups_family.currentData()
+        self.ups_model.blockSignals(True)
+        self.ups_model.clear()
+        for var_key, var_info in self._ups_variants_for_family(fam_key):
+            self.ups_model.addItem(tr(var_info["label_key"]), var_key)
+            idx = self.ups_model.count() - 1
+            self.ups_model.setItemData(
+                idx, tr(var_info["tooltip_key"]), Qt.ToolTipRole)
+        self.ups_model.blockSignals(False)
+
     def _gather_settings(self):
+        """Split the batch UI into (per-stage settings, final-output settings).
+
+        Per-stage settings carry each stage's cache codec (intermediate
+        format). The Final Output dict carries codec/fps/aspect/resize
+        that get applied at the terminal stage — either injected into the
+        upscale worker when upscale is enabled, or handled by an appended
+        TranscodeWorker step when upscale is disabled.
+        """
         inpaint = {
             "enabled": self.inp_box.isChecked(),
             "output_format": self.inp_codec.codec(),
             "prores_profile": self.inp_codec.prores_profile(),
             "fp16": True,
-            # ProPainter defaults (matches InpaintPage). The user didn't
-            # ask for per-stage advanced controls in v1 of the batch tab.
             "subvideo_length": 80,
             "ref_stride": 10,
             "neighbor_length": 10,
             "raft_iter": 20,
             "mask_dilation": 0,
-            # ProPainter's internal `mask_dilation` (above) is a model
-            # knob; this one expands the Dreamina PRESET MASK in 2D
-            # before the worker ever sees it. Different layer.
             "dreamina_dilation_px": int(self.inp_mask_dilation.value()),
             "max_batch_frames": int(self.inp_batch_frames.value()),
         }
@@ -828,14 +977,6 @@ class BatchPage(QWidget):
             "batch_size": int(self.den_batch.value()),
             "occlusion_threshold": 0.02,
             "cut_threshold": 0.05,
-            # flow_scale matches fdcore DEFAULT_SETTINGS (0.5) so the
-            # batch tab denoise runs at the same MEMFOF resolution the
-            # single denoise tab uses. Forcing 1.0 here would push
-            # MEMFOF to full source resolution — 4x the tensor size,
-            # which appeared as a "hang at 0%" on bs=24 because each
-            # chunk's forward took minutes instead of seconds. The
-            # single tab worked fine with bs=24 because it stayed at
-            # 0.5; only the batch tab carried this inflated value.
             "flow_scale": 0.5,
             "fp16": True,
             "compute_noise_preview": False,
@@ -845,28 +986,49 @@ class BatchPage(QWidget):
         upscale = {
             "enabled": self.ups_box.isChecked(),
             "model": self.ups_model.currentData() or "openproteus_2x",
-            "target_long_edge": int(self.ups_target.currentData() or 0),
-            "force_16_9": self.ups_aspect_force.enabled(),
             "max_batch_frames": int(self.ups_batch_frames.value()),
-            # 0.0 = follow auto-detected (snapped) fps in UpscaleWorker;
-            # >0 forces the rate the user picked in the dropdown.
-            "fps_override": (0.0 if self.ups_fps_auto.isChecked()
-                             else float(self.ups_fps_override.currentData())),
             "fp16": True,
+            # Cache codec — used only when upscale is a MIDDLE stage
+            # (currently never, but kept for symmetry with the other
+            # stages). When upscale is terminal (the common case), the
+            # orchestrator overrides these with the Final Output codec.
             "output_format": self.ups_codec.codec(),
             "prores_profile": self.ups_codec.prores_profile(),
         }
-        return inpaint, denoise, upscale
+        # Final Output params. `aspect_mode` supersedes the legacy
+        # `force_16_9` bool consumed by the single Upscale tab —
+        # UpscaleWorker prefers aspect_mode when both are present.
+        final = {
+            "aspect_mode": self.fin_aspect.mode(),
+            "target_long_edge": int(self.fin_target.currentData() or 0),
+            "fps_override": (0.0 if self.fin_fps_auto.isChecked()
+                             else float(self.fin_fps_override.currentData())),
+            "output_format": self.fin_codec.codec(),
+            "prores_profile": self.fin_codec.prores_profile(),
+        }
+        return inpaint, denoise, upscale, final
 
     def _run(self):
         if not self._files:
             QMessageBox.information(self, "Batch", tr("batch_no_files"))
             return
-        inpaint, denoise, upscale = self._gather_settings()
-        if not (inpaint["enabled"] or denoise["enabled"]
-                or upscale["enabled"]):
-            QMessageBox.information(self, "Batch", tr("batch_no_stages"))
-            return
+        inpaint, denoise, upscale, final = self._gather_settings()
+        any_stage_on = (inpaint["enabled"] or denoise["enabled"]
+                        or upscale["enabled"])
+        if not any_stage_on:
+            # All stages off — the Final Output group alone must produce
+            # a genuine change, otherwise there's nothing to do. Use the
+            # first queued clip as a representative source for the check.
+            try:
+                from fdcore.transcode import is_noop
+                if is_noop(self._files[0], final):
+                    QMessageBox.information(
+                        self, "Batch", tr("batch_no_changes"))
+                    return
+            except Exception:
+                # If the probe crashes, err on the side of trying — the
+                # transcode itself will surface the real problem.
+                pass
 
         custom_dir = self.out_dir_edit.text().strip() or None
         if custom_dir:
@@ -888,9 +1050,16 @@ class BatchPage(QWidget):
             self._active_stages.append(STAGE_DENOISE)
         if upscale["enabled"]:
             self._active_stages.append(STAGE_UPSCALE)
+        # Orchestrator decides whether to append a transcode step and
+        # tells us via a signal after start(); for now provisionally add
+        # it if upscale isn't the last active stage. See _on_progress
+        # for the stage-rank math.
+        needs_transcode = (not upscale["enabled"]) and self._is_final_nontrivial(final)
+        if needs_transcode:
+            self._active_stages.append(STAGE_TRANSCODE)
 
         self._orchestrator = BatchOrchestrator(
-            self._files, inpaint, denoise, upscale,
+            self._files, inpaint, denoise, upscale, final,
             output_dir_base=custom_dir,
             custom_masks=self._masks,
             parent=self)
@@ -942,12 +1111,23 @@ class BatchPage(QWidget):
         self.btn_add.setEnabled(not running)
         self.btn_remove.setEnabled(not running)
         self.btn_clear.setEnabled(not running)
-        self.queue_list.setEnabled(not running)
+        # queue_list stays ENABLED during run so the user can still
+        # scroll, click a row to preview that clip's status, or watch
+        # the spinner animate. Mutating operations (add / remove /
+        # clear / mask edit / drops) are gated at their entry points
+        # via _is_running() instead. Disabling the whole list here
+        # would also disable its scroll bar and mouse wheel scroll,
+        # which is what regressed the "can't scroll mid-run" UX.
+        self.queue_list.setAcceptDrops(not running)
         self.inp_box.setEnabled(not running)
         self.den_box.setEnabled(not running)
         self.ups_box.setEnabled(not running)
+        self.fin_box.setEnabled(not running)
         self.out_dir_edit.setEnabled(not running)
         self.btn_out_browse.setEnabled(not running)
+
+    def _is_running(self) -> bool:
+        return self._orchestrator is not None
 
     # ------------------------------------------------------------------
     # Orchestrator signal handlers

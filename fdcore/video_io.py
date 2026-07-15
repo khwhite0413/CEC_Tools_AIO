@@ -82,12 +82,26 @@ def _get_ffprobe() -> str:
 
 
 # Standard delivery frame rates that real-world content actually targets.
-# AI-generated VFR sources (Seedance, Dreamina, etc.) report fractional
-# averages like 24.04 in their metadata but the intended target is one of
-# these. NTSC fractional rates (23.976, 29.97, 59.94) are included so the
-# snap logic doesn't accidentally promote them up to the nearest integer.
-_STANDARD_FPS = (23.976, 24.0, 25.0, 29.97, 30.0, 50.0, 59.94, 60.0)
-_FPS_SNAP_TOLERANCE = 0.1  # snap only when within this many fps of a standard
+# Covers the full range from animation (12) through gaming HFR (240) so
+# the snap logic can pick a sensible nearest match for any source without
+# having to guess when to give up.
+# NTSC fractional rates (23.976, 29.97, 47.952, 59.94, 119.88) are
+# included so the snap logic doesn't accidentally promote them up to
+# the nearest integer.
+_STANDARD_FPS = (
+    12.0, 15.0, 18.0,
+    23.976, 24.0, 25.0, 29.97, 30.0,
+    47.952, 48.0, 50.0, 59.94, 60.0,
+    100.0, 119.88, 120.0, 240.0,
+)
+# Max distance (fps) from a standard rate that still qualifies for snap.
+# 2.0 comfortably catches:
+#   Topaz outputs (30.14, 31.24 → 30; 60.19 → 60)
+#   AI VFR metadata (24.04 → 24; 28.992 → 29.97)
+# while leaving genuinely-unusual rates alone (45 → not 50, 33.5 → not 30).
+# The old 0.1 was tuned for AI VFR only and missed the Topaz-style
+# 1-fps-plus deviations that show up in real delivery workflows.
+_FPS_SNAP_TOLERANCE = 2.0
 
 
 def _snap_fps(fps):
@@ -95,10 +109,12 @@ def _snap_fps(fps):
     `_FPS_SNAP_TOLERANCE`; otherwise return the input unchanged.
 
     Examples:
-        24.04 → 24.0       (Seedance VFR — closest is 24.0 at 0.04)
+        24.04 → 24.0       (AI VFR — closest is 24.0 at 0.04)
         23.98 → 23.976     (closest is the NTSC fraction at 0.004, NOT 24.0)
         29.97 → 29.97      (already standard)
-        27.534 → 27.534    (no standard within tolerance, leave alone)
+        31.24 → 30.0       (Topaz interpolation — closest is 30 at 1.24)
+        28.992 → 29.97     (NTSC — closest at 0.978)
+        45.0  → 45.0       (no standard within tolerance, preserved)
         None / 0 → unchanged
     """
     if not fps or fps <= 0:

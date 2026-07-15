@@ -177,26 +177,11 @@ if errorlevel 1 (
     echo    WARNING: ProPainter weights download failed - retry from the Inpaint tab
 )
 
-REM === Step 8: OpenProteus upscale weight ===
-echo [8/10] Fetching OpenProteus upscale weight ^(~2.4MB^)...
-set "UPS_DIR=%ROOT%weights\openproteus"
-mkdir "%UPS_DIR%" 2>nul
-set "UPS_FILE=%UPS_DIR%\2x_OpenProteus_Compact_i2_70K.pth"
-if exist "%UPS_FILE%" (
-    echo    OpenProteus weight already present
-) else (
-    curl -sL -o "%UPS_FILE%" "https://github.com/Sirosky/Upscale-Hub/releases/download/OpenProteus/2x_OpenProteus_Compact_i2_70K.pth"
-    if errorlevel 1 (
-        echo    WARNING: OpenProteus download failed - retry from the Upscale tab
-    ) else (
-        for %%A in ("%UPS_FILE%") do set "USIZE=%%~zA"
-        if !USIZE! LSS 1000000 (
-            echo    WARNING: OpenProteus file too small ^(!USIZE! bytes^), removing
-            del /f /q "%UPS_FILE%"
-        ) else (
-            echo    OpenProteus weight OK
-        )
-    )
+REM === Step 8: Upscale model weights (all families) ===
+echo [8/10] Fetching upscale weights ^(~250MB total across all families, first run only^)...
+"%PYTHON%" -c "from app.upscale_worker import download_missing_weights; download_missing_weights()"
+if errorlevel 1 (
+    echo    WARNING: some upscale weights failed - retry from the Upscale tab or re-run setup
 )
 
 REM === Step 9: Pretendard fonts (bundled at runtime, OFL) ===

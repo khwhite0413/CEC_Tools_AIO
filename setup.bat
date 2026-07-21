@@ -43,6 +43,19 @@ if exist "%PYTHON%" (
     echo    Done
 )
 
+REM === Step 1.5: Environment pre-flight check ===
+REM Catches known GPU/driver mismatches (RTX 50 with pre-CUDA-12.8 driver,
+REM pre-Pascal GPUs, low VRAM) BEFORE PyTorch install. Skipping this and
+REM installing the wrong wheel leads to first-launch crashes with the
+REM "CUDA error: no kernel image is available for execution on the
+REM device" runtime error that's hard to diagnose after the fact.
+"%PYTHON%" "%ROOT%app\setup_check.py"
+if errorlevel 1 (
+    echo.
+    echo Setup aborted by environment check. See message above.
+    goto :fail
+)
+
 REM === Step 2: Detect GPU and install PyTorch ===
 echo [2/10] Detecting GPU...
 

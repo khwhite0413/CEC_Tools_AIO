@@ -43,12 +43,16 @@ if exist "%PYTHON%" (
     echo    Done
 )
 
-REM === Step 1.5: Environment pre-flight check ===
-REM Catches known GPU/driver mismatches (RTX 50 with pre-CUDA-12.8 driver,
-REM pre-Pascal GPUs, low VRAM) BEFORE PyTorch install. Skipping this and
-REM installing the wrong wheel leads to first-launch crashes with the
-REM "CUDA error: no kernel image is available for execution on the
-REM device" runtime error that's hard to diagnose after the fact.
+REM === Step 2: Environment check + PyTorch install ===
+REM app/setup_check.py owns the whole GPU-detect + PyTorch pick + install
+REM path. Drives off GPU compute capability (not driver's CUDA runtime,
+REM which is a different concern and got the old shell-based detection
+REM wrong on driver 610+ where the banner renamed "CUDA Version" ->
+REM "CUDA UMD Version"). Also auto-heals a wrong-wheel install by
+REM uninstalling + reinstalling the correct one when the installed
+REM torch's arch list doesn't cover the GPU (fixes RTX 50 + cu121
+REM pinning that shipped "no kernel image" errors at first launch).
+echo [2/10] Environment check + PyTorch install...
 "%PYTHON%" "%ROOT%app\setup_check.py"
 if errorlevel 1 (
     echo.
@@ -56,47 +60,9 @@ if errorlevel 1 (
     goto :fail
 )
 
-REM === Step 2: Detect GPU and install PyTorch ===
-echo [2/10] Detecting GPU...
-
-"%PYTHON%" -c "import torch" >nul 2>&1
-if not errorlevel 1 (
-    echo    PyTorch already installed
-    goto :step3
-)
-
-set "CUDA_INDEX=cpu"
-set "CUDA_MAJOR=0"
-
-nvidia-smi >nul 2>&1
-if errorlevel 1 (
-    echo    No NVIDIA GPU - CPU mode
-    goto :install_torch
-)
-
-for /f "tokens=9 delims= " %%a in ('nvidia-smi ^| findstr "CUDA Version"') do set "CUDA_VER=%%a"
-for /f "tokens=1 delims=." %%a in ("%CUDA_VER%") do set "CUDA_MAJOR=%%a"
-
-echo    CUDA Version: %CUDA_VER% ^(major: %CUDA_MAJOR%^)
-
-if "%CUDA_MAJOR%"=="13" set "CUDA_INDEX=cu128" & goto :install_torch
-if "%CUDA_MAJOR%"=="12" set "CUDA_INDEX=cu124" & goto :install_torch
-if "%CUDA_MAJOR%"=="11" set "CUDA_INDEX=cu118" & goto :install_torch
-set "CUDA_INDEX=cu121"
-
-:install_torch
-echo    Installing PyTorch ^(%CUDA_INDEX%^)...
-if "%CUDA_INDEX%"=="cpu" (
-    "%PYTHON%" -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu --no-warn-script-location -q
-) else if "%CUDA_INDEX%"=="cu128" (
-    "%PYTHON%" -m pip install torch torchvision --index-url https://download.pytorch.org/whl/nightly/cu128 --no-warn-script-location -q
-) else (
-    "%PYTHON%" -m pip install torch torchvision --index-url https://download.pytorch.org/whl/%CUDA_INDEX% --no-warn-script-location -q
-)
-
 "%PYTHON%" -c "import torch; print('    PyTorch', torch.__version__, '| CUDA available:', torch.cuda.is_available())"
 if errorlevel 1 (
-    echo    ERROR: PyTorch import failed
+    echo    ERROR: PyTorch import failed after setup_check.
     goto :fail
 )
 

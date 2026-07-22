@@ -34,7 +34,6 @@ Exit codes:
 from __future__ import annotations
 
 import ctypes
-import os
 import re
 import shutil
 import subprocess
@@ -82,7 +81,12 @@ def _banner(color: str, title: str, body: list[str]) -> None:
 
 def _run(cmd: list[str], timeout: int = 15) -> tuple[int, str]:
     try:
+        # encoding="utf-8" + errors="replace" so a non-UTF-8 default
+        # locale (Windows cp949 on Korean PCs was the trigger) doesn't
+        # UnicodeDecodeError while decoding nvidia-smi / pip / torch
+        # subprocess output when it contains non-ASCII bytes.
         proc = subprocess.run(cmd, capture_output=True, text=True,
+                              encoding="utf-8", errors="replace",
                               timeout=timeout, stdin=subprocess.DEVNULL)
         return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
     except Exception as e:

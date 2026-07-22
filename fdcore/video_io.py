@@ -150,7 +150,13 @@ def _probe_video_fields(path: str) -> dict:
                "-show_entries", "stream=" + ",".join(fields),
                "-of", "default=noprint_wrappers=1",
                path]
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        # encoding="utf-8" + errors="replace" so a non-UTF-8 default
+        # locale (Windows cp949 on Korean PCs) doesn't blow up decoding
+        # ffprobe's UTF-8 output when the video path contains non-ASCII
+        # characters. Same pattern the audio probe below already uses.
+        r = subprocess.run(cmd, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace",
+                           timeout=10, stdin=subprocess.DEVNULL)
         if r.returncode == 0:
             out = {}
             for line in r.stdout.splitlines():
@@ -214,8 +220,11 @@ def _probe_via_ffmpeg(path: str) -> dict:
     Best-effort; missing fields stay missing so callers fall back to
     bt709 defaults / cv2 fps like before."""
     try:
-        cmd = [_get_ffmpeg(), "-hide_banner", "-i", path]
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        cmd = [_get_ffmpeg(), "-hide_banner", "-nostdin", "-i", path]
+        # Force utf-8 decoding — see _probe_video_fields note.
+        r = subprocess.run(cmd, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace",
+                           timeout=10, stdin=subprocess.DEVNULL)
     except Exception:
         return {}
     out = {}
@@ -555,7 +564,11 @@ def copy_stream(input_path: str, output_path: str, frame_cap: int = -1) -> None:
         "-shortest",
         output_path,
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    # Force utf-8 decoding — ffmpeg's stderr is UTF-8, Python otherwise
+    # tries locale (cp949 on Korean Windows) and blows up mid-mux.
+    proc = subprocess.run(cmd, capture_output=True, text=True,
+                          encoding="utf-8", errors="replace",
+                          timeout=300, stdin=subprocess.DEVNULL)
     if proc.returncode != 0:
         raise RuntimeError(
             f"ffmpeg -c copy failed (rc={proc.returncode}): "
@@ -569,7 +582,10 @@ def get_original_bitrate(path: str) -> int:
                "-show_entries", "stream=bit_rate",
                "-of", "default=noprint_wrappers=1:nokey=1",
                path]
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        # Force utf-8 decoding — see _probe_video_fields note.
+        r = subprocess.run(cmd, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace",
+                           timeout=10, stdin=subprocess.DEVNULL)
         if r.returncode == 0 and r.stdout.strip().isdigit():
             return int(r.stdout.strip())
     except Exception:

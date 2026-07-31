@@ -9,14 +9,17 @@ import os
 import shutil
 import time
 
-from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QDragEnterEvent, QDropEvent, QPixmap, QPalette, QColor
+from PyQt5.QtCore import Qt, QTimer, QSettings, QUrl
+from PyQt5.QtGui import (QDragEnterEvent, QDropEvent, QPixmap, QPalette,
+                          QColor, QDesktopServices)
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                               QLabel, QPushButton, QFileDialog, QProgressBar,
                               QPlainTextEdit, QMessageBox, QScrollArea,
                               QSplitter, QLineEdit, QGroupBox, QStackedWidget,
-                              QFrame, QButtonGroup, QComboBox)
+                              QFrame, QButtonGroup, QComboBox, QProgressDialog,
+                              QApplication)
 
+from app._version import __version__
 from app.parameter_panel import ParameterPanel
 from app.preview_dialog import PreviewDialog
 from app.video_player import VideoPlayer
@@ -120,7 +123,7 @@ QPushButton:checked {
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("CEC All-In-One v1.0.7")
+        self.setWindowTitle(f"CEC All-In-One v{__version__}")
         self.resize(1320, 860)
         self.setAcceptDrops(True)
 
@@ -179,6 +182,16 @@ class MainWindow(QMainWindow):
         # stays visible across tab switches because it's a direct child of
         # the central widget (sibling of the QStackedWidget, raised above it).
         self.chatbot = ChatbotOverlay(central)
+
+        # ---- Update check --------------------------------------------
+        # Delayed 3 s after __init__ so the main window is fully painted
+        # and interactive before the background HTTP thread starts. The
+        # worker itself is silent on any failure (network down, JSON
+        # malformed, etc.) so an offline PC never sees an error popup
+        # on startup — this fires-and-forgets safely.
+        self._update_worker = None
+        self._manual_update_worker = None
+        QTimer.singleShot(3000, self._check_for_update)
 
     # ------------------------------------------------------------------
     # Header
@@ -241,6 +254,26 @@ class MainWindow(QMainWindow):
         h.addWidget(self.btn_tab_about)
 
         h.addStretch(1)
+
+        # Manual update-check button. Bypasses the QSettings
+        # "skip_version" that the popup's "이 버전 건너뛰기" writes, so
+        # a user who dismissed the auto-popup still has a discoverable
+        # way to trigger it again. Placed here (right cluster next to
+        # the language combo) instead of buried in About, because the
+        # About tab is rarely visited.
+        self.btn_check_update = QPushButton("↻ 업데이트 확인")
+        self.btn_check_update.setToolTip("서버에서 최신 버전을 확인합니다")
+        self.btn_check_update.setStyleSheet(
+            "QPushButton { padding: 4px 10px; font-size: 8pt; "
+            "background: transparent; color: rgba(200,204,220,180); "
+            "border: 1px solid rgba(120,120,140,80); border-radius: 4px; } "
+            "QPushButton:hover { color: rgba(230,234,250,255); "
+            "border-color: rgba(150,150,170,140); } "
+            "QPushButton:pressed { background: rgba(120,120,140,40); } "
+            "QPushButton:disabled { color: rgba(150,150,170,120); }"
+        )
+        self.btn_check_update.clicked.connect(self._manual_update_check)
+        h.addWidget(self.btn_check_update)
 
         # Language combo
         self.lang_combo = QComboBox()
@@ -822,6 +855,213 @@ class MainWindow(QMainWindow):
             self.chatbot.reposition()
         except Exception:
             pass
+
+    # ------------------------------------------------------------------
+    # Auto-update (silent-on-failure background check → optional popup)
+    # ------------------------------------------------------------------
+    def _check_for_update(self):
+        """Kick the background HTTP check. Reentrant-safe — if a prior
+        check is still running (very slow network) we just skip."""
+        if self._update_worker is not None and self._update_worker.isRunning():
+            return
+        try:
+            from app.update_checker import UpdateCheckWorker
+        except Exception:
+            return
+        self._update_worker = UpdateCheckWorker(self)
+        self._update_worker.result.connect(self._on_update_check_result)
+        self._update_worker.start()
+
+    def _on_update_check_result(self, payload: dict):
+        if not payload.get("is_newer"):
+            return
+        # "Skip this version" preference — user clicked the destructive
+        # button on a prior popup. Only suppresses THIS specific tag;
+        # next version bump will pop again.
+        tag = payload.get("tag") or ""
+        settings = QSettings("AIMZ", "CEC-AllInOne")
+        skipped = settings.value("updater/skip_version", "")
+        if tag and skipped == tag:
+            return
+        self._show_update_dialog(payload)
+
+    @staticmethod
+    def _clean_release_notes(body: str) -> str:
+        """Turn GitHub release Markdown into plain-text lines that read
+        well in a QMessageBox (which doesn't render Markdown, and whose
+        AutoText detection only handles HTML).
+
+        We strip the leading H1 line because it's always a redundant
+        `# vX.Y.Z — <title>` echo of the tag we already show above the
+        body. Remaining headings collapse to their text; `**bold**` and
+        `` `code` `` markers drop; bullet dashes become • .
+        """
+        import re
+        lines = (body or "").strip().splitlines()
+        while lines and lines[0].strip() == "":
+            lines.pop(0)
+        if lines and re.match(r"^#\s+", lines[0]):
+            lines.pop(0)
+        cleaned = "\n".join(lines).strip()
+        cleaned = re.sub(r"^#{1,6}\s+", "", cleaned, flags=re.MULTILINE)
+        cleaned = re.sub(r"\*\*(.+?)\*\*", r"\1", cleaned)
+        cleaned = re.sub(r"(?<!\*)\*(?!\s)(.+?)(?<!\s)\*(?!\*)", r"\1",
+                         cleaned)
+        cleaned = re.sub(r"`([^`]+)`", r"\1", cleaned)
+        cleaned = re.sub(r"^\s*-\s+", "• ", cleaned, flags=re.MULTILINE)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+        return cleaned.strip()
+
+    def _show_update_dialog(self, payload: dict):
+        current = payload.get("current") or __version__
+        latest_tag = payload.get("tag") or ""
+        body = self._clean_release_notes(payload.get("body") or "")
+
+        lines = body.splitlines()
+        if len(lines) > 12:
+            body = "\n".join(lines[:12]).rstrip() + "\n..."
+
+        if body:
+            text = (f"현재 버전: v{current}\n"
+                    f"최신 버전: {latest_tag}\n\n"
+                    f"주요 변경 사항:\n{body}")
+        else:
+            text = (f"현재 버전: v{current}\n"
+                    f"최신 버전: {latest_tag}")
+
+        box = QMessageBox(self)
+        box.setWindowTitle("업데이트 있음")
+        box.setIcon(QMessageBox.Information)
+        box.setText("새 버전이 있습니다.")
+        box.setInformativeText(text)
+
+        btn_update = box.addButton("지금 업데이트",
+                                    QMessageBox.AcceptRole)
+        btn_skip = box.addButton("이 버전 건너뛰기",
+                                  QMessageBox.DestructiveRole)
+        box.addButton("나중에", QMessageBox.RejectRole)
+        box.setDefaultButton(btn_update)
+
+        box.exec_()
+        clicked = box.clickedButton()
+
+        if clicked is btn_update:
+            self._start_update(payload)
+        elif clicked is btn_skip:
+            tag = payload.get("tag") or ""
+            if tag:
+                QSettings("AIMZ", "CEC-AllInOne").setValue(
+                    "updater/skip_version", tag)
+
+    def _start_update(self, payload: dict):
+        """Download + extract → kick updater.bat → quit app."""
+        endpoint = payload.get("download_endpoint") or ""
+        if not endpoint:
+            QMessageBox.warning(self, "업데이트",
+                                "다운로드 endpoint 가 없습니다.")
+            return
+
+        try:
+            from app.updater import UpdaterWorker, kick_updater_bat
+        except Exception as e:
+            QMessageBox.critical(self, "업데이트", f"업데이터 로드 실패: {e}")
+            return
+
+        dialog = QProgressDialog(
+            "다운로드 준비 중...", "취소", 0, 100, self)
+        dialog.setWindowTitle("업데이트 다운로드")
+        dialog.setWindowModality(Qt.ApplicationModal)
+        dialog.setAutoClose(False)
+        dialog.setAutoReset(False)
+        dialog.setMinimumDuration(0)
+        dialog.setValue(0)
+        dialog.show()
+
+        worker = UpdaterWorker(endpoint, self)
+
+        def _on_progress(done, total):
+            if total > 0:
+                pct = int(100 * done / total)
+                dialog.setValue(min(100, pct))
+                dialog.setLabelText(
+                    f"다운로드 중... {done // (1024 * 1024)} / "
+                    f"{total // (1024 * 1024)} MB")
+            else:
+                dialog.setLabelText(
+                    f"다운로드 중... {done // (1024 * 1024)} MB")
+
+        def _on_ok(src_root):
+            dialog.close()
+            try:
+                kick_updater_bat(src_root)
+            except Exception as e:
+                QMessageBox.critical(self, "업데이트 실패", str(e))
+                return
+            QTimer.singleShot(500, QApplication.instance().quit)
+
+        def _on_err(msg):
+            dialog.close()
+            QMessageBox.critical(self, "업데이트 실패", msg)
+
+        worker.progress.connect(_on_progress)
+        worker.finished_ok.connect(_on_ok)
+        worker.error.connect(_on_err)
+        dialog.canceled.connect(worker.terminate)
+        worker.start()
+
+    # ------------------------------------------------------------------
+    # Manual "check for update" — header button entry point.
+    # Deliberately ignores QSettings skip_version pref so users who
+    # dismissed a version can still get the popup back.
+    # ------------------------------------------------------------------
+    def _manual_update_check(self):
+        existing = getattr(self, "_manual_update_worker", None)
+        if existing is not None and existing.isRunning():
+            return
+        try:
+            from app.update_checker import UpdateCheckWorker
+        except Exception as e:
+            QMessageBox.critical(self, "업데이트 확인",
+                                 f"업데이트 체커 로드 실패: {e}")
+            return
+        self.btn_check_update.setEnabled(False)
+        self.btn_check_update.setText("확인 중...")
+        self._manual_update_worker = UpdateCheckWorker(self)
+        self._manual_update_worker.result.connect(
+            self._on_manual_update_result)
+        self._manual_update_worker.error.connect(
+            self._on_manual_update_error)
+        self._manual_update_worker.result.connect(
+            lambda _p: self._restore_update_button())
+        self._manual_update_worker.error.connect(
+            lambda _m: self._restore_update_button())
+        self._manual_update_worker.start()
+
+    def _restore_update_button(self):
+        try:
+            self.btn_check_update.setEnabled(True)
+            self.btn_check_update.setText("↻ 업데이트 확인")
+        except Exception:
+            pass
+
+    def _on_manual_update_result(self, payload: dict):
+        if payload.get("is_newer"):
+            # Manual path — bypass the skip_version pref entirely.
+            self._show_update_dialog(payload)
+            return
+        current = payload.get("current") or __version__
+        latest = payload.get("latest") or current
+        QMessageBox.information(
+            self, "업데이트 확인",
+            f"현재 최신 버전입니다.\n\n"
+            f"설치된 버전: v{current}\n"
+            f"서버 최신 버전: v{latest}")
+
+    def _on_manual_update_error(self, msg: str):
+        QMessageBox.warning(
+            self, "업데이트 확인",
+            f"업데이트 확인 실패:\n\n{msg}\n\n"
+            "네트워크 연결 상태 또는 잠시 후 다시 시도해주세요.")
 
     def closeEvent(self, e):
         if self.worker is not None and self.worker.isRunning():

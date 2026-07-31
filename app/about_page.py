@@ -8,6 +8,7 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                               QFrame, QPushButton, QScrollArea, QSizePolicy,
                               QButtonGroup, QStackedWidget)
 
+from app._version import __version__
 from app.i18n import tr, get_lang
 
 
@@ -555,7 +556,7 @@ class AboutPage(QWidget):
             "border: none; background: transparent;")
         card_lay.addWidget(title)
 
-        version = QLabel("v1.0.7")
+        version = QLabel(f"v{__version__}")
         version.setAlignment(Qt.AlignCenter)
         version.setStyleSheet(
             "color: rgba(150, 154, 170, 200); "

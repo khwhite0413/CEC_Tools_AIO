@@ -238,7 +238,10 @@ echo.
 echo ============================================
 echo   Setup complete! Run: run.bat
 echo ============================================
-pause
+REM Skip the interactive pause when invoked non-interactively (auto-
+REM updater calls setup.bat in a chain and needs to continue without
+REM waiting for a keypress). CEC_AUTO_INSTALL is set by updater.bat.
+if not defined CEC_AUTO_INSTALL pause
 exit /b 0
 
 :fail
@@ -246,5 +249,5 @@ echo.
 echo ============================================
 echo   Setup FAILED. See errors above.
 echo ============================================
-pause
+if not defined CEC_AUTO_INSTALL pause
 exit /b 1

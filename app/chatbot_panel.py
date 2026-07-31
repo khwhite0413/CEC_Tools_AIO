@@ -17,6 +17,7 @@ from PyQt5.QtGui import QKeyEvent, QPainter, QPen
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                               QLabel, QPlainTextEdit, QScrollArea, QFrame)
 
+from app._version import __version__
 from app.i18n import tr
 
 
@@ -27,7 +28,7 @@ MAX_HISTORY = 20  # last N turns kept in the request body
 
 # Manual + persona for the chatbot. Korean primary; the model is asked
 # to mirror the user's language for general questions.
-SYSTEM_PROMPT = """\
+SYSTEM_PROMPT = f"""\
 당신은 "CEC All-In-One" 데스크톱 애플리케이션 안에 내장된 도우미 챗봇입니다.
 
 # 응답 규칙
@@ -36,7 +37,7 @@ SYSTEM_PROMPT = """\
 - 모르는 건 솔직히 모른다고 답하세요.
 - 답변은 간결하게. 필요한 경우 마크다운(굵게/리스트)을 사용해도 됩니다.
 
-# CEC All-In-One v1.0.7 개요
+# CEC All-In-One v{__version__} 개요
 AI 영상 후처리 통합 데스크톱 도구 (PyQt5 기반). 네 가지 작업 탭 + About:
 1. 인페인트 (Inpaint) — ProPainter로 워터마크/객체 제거
 2. 디노이즈 (Denoise) — FlowDenoise로 시간적 광학흐름 기반 노이즈 감소
@@ -218,6 +219,18 @@ A: 네, 편집기 하단에 프레임 슬라이더가 있어요. 슬라이더를
 - 로그 파일: <앱폴더>/logs/cec_aio.log
 - 모델 가중치: <앱폴더>/weights/ (setup.bat이 자동 다운로드)
 
+# v1.0.8에서 추가/변경된 기능
+- **자동 업데이트 시스템** — 앱 시작 시 서버에서 최신 버전을 백그라운드로
+  조회, 새 버전이 있으면 팝업으로 알림. "지금 업데이트" 클릭 시 소스 파일
+  자동 다운로드/교체/재시작. 사용자는 압축 해제나 setup.bat 재실행 안 해도
+  됨. 헤더 우측의 "↻ 업데이트 확인" 버튼으로 언제든 수동 체크 가능.
+- **버전 문자열 단일화** — `app/_version.py` 가 canonical 소스가 되어
+  main_window / about_page / chatbot 이 모두 여기서 import. 다음 릴리즈
+  bump 는 _version.py 한 줄만 수정하면 끝.
+- **.bat 파일 CRLF 강제** — .gitattributes 로 배포 zipball 이 항상 CRLF
+  라인엔딩으로 나오도록. 이전 v1.0.7 auto-update 사이클에서 LF-only .bat
+  파일이 cmd.exe 파싱 실패를 유발했던 문제 해결.
+
 # v1.0.7에서 추가/변경된 기능
 - **업스케일 모델 15종 추가** — Sirosky Upscale-Hub 의 AniToon(3) / AniSD(3) /
   Ani4K v2(2) / AniScale 2(7) 계열 편입. 업스케일 탭과 배치 탭 모두 "계열 → 세부
@@ -338,7 +351,7 @@ class ChatWorker(QThread):
                     "Referer":
                         "https://khwhite0413.github.io/idol-prompt-builder/",
                     "User-Agent":
-                        "CEC-AllInOne/1.0.7 (+khwhite0413)",
+                        f"CEC-AllInOne/{__version__} (+khwhite0413)",
                 },
                 method="POST",
             )

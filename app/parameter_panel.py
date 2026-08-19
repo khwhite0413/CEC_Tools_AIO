@@ -329,13 +329,25 @@ class ParameterPanel(QWidget):
         # would land on for the corresponding source.
         for value, text in _STANDARD_FPS_OPTIONS:
             self.fps_override.addItem(text, value)
+        self.fps_override.addItem(tr("fps_custom"), -1.0)
         # 24 is the most common target for AI VFR sources, so default
         # selection lands there.
         self.fps_override.setCurrentIndex(_STANDARD_FPS_OPTIONS.index((24.0, "24")))
         self.fps_override.setEnabled(False)
         self.fps_override.setToolTip(tr("tooltip_fps_override"))
+
+        self.fps_custom_spin = QDoubleSpinBox()
+        self.fps_custom_spin.setRange(0.001, 1000.0)
+        self.fps_custom_spin.setDecimals(3)
+        self.fps_custom_spin.setSingleStep(1.0)
+        self.fps_custom_spin.setValue(24.000)
+        self.fps_custom_spin.setToolTip(tr("tooltip_fps_custom"))
+        self.fps_custom_spin.setVisible(False)
+        self.fps_custom_spin.setEnabled(False)
+
         fps_h.addWidget(self.fps_auto_check)
         fps_h.addWidget(self.fps_override, 1)
+        fps_h.addWidget(self.fps_custom_spin, 1)
         fps_form.addRow(tr("label_fps_override"), fps_row)
         out_lay.addWidget(self._fps_override_drawer)
         self._fps_override_drawer.setVisible(False)
@@ -346,11 +358,22 @@ class ParameterPanel(QWidget):
         # Wiring: Auto toggle drives the dropdown's enabled state, and
         # any change to dev_mode / Auto / override selection should
         # refresh the effective fps display.
-        self.fps_auto_check.toggled.connect(
-            lambda checked: self.fps_override.setEnabled(not checked))
+        def _on_fps_auto_toggled(checked: bool):
+            self.fps_override.setEnabled(not checked)
+            is_custom = (not checked) and (self.fps_override.currentData() == -1.0)
+            self.fps_custom_spin.setEnabled(is_custom)
+            self.fps_custom_spin.setVisible(is_custom)
+
+        def _on_fps_override_changed(_idx: int):
+            is_custom = (not self.fps_auto_check.isChecked()) and (self.fps_override.currentData() == -1.0)
+            self.fps_custom_spin.setEnabled(is_custom)
+            self.fps_custom_spin.setVisible(is_custom)
+            self._refresh_effective_fps_label()
+
+        self.fps_auto_check.toggled.connect(_on_fps_auto_toggled)
         self.fps_auto_check.toggled.connect(self._refresh_effective_fps_label)
-        self.fps_override.currentIndexChanged.connect(
-            self._refresh_effective_fps_label)
+        self.fps_override.currentIndexChanged.connect(_on_fps_override_changed)
+        self.fps_custom_spin.valueChanged.connect(self._refresh_effective_fps_label)
         self.dev_mode.toggled.connect(self._refresh_effective_fps_label)
 
         self.output_format.currentIndexChanged.connect(self._on_format_changed)
@@ -409,8 +432,14 @@ class ParameterPanel(QWidget):
         # float from _STANDARD_FPS_OPTIONS so no extra guard needed.
         if (self.dev_mode.isChecked()
                 and not self.fps_auto_check.isChecked()):
-            out["fps_override"] = float(self.fps_override.currentData())
+            out["fps_override"] = self._get_override_fps()
         return out
+
+    def _get_override_fps(self) -> float:
+        val = float(self.fps_override.currentData() or 0.0)
+        if val <= 0:
+            return float(self.fps_custom_spin.value())
+        return val
 
     def current_format(self) -> str:
         idx = self.output_format.currentIndex()
@@ -438,7 +467,7 @@ class ParameterPanel(QWidget):
         # Override applies only when Dev mode is on AND Auto is unchecked.
         if (self.dev_mode.isChecked()
                 and not self.fps_auto_check.isChecked()):
-            val = float(self.fps_override.currentData())
+            val = self._get_override_fps()
             self.effective_fps_label.setText(f"{val:.3f}")
         else:
             self.effective_fps_label.setText(

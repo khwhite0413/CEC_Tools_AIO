@@ -678,7 +678,11 @@ _STRINGS = {
     "label_input_fps":        {"ko": "FPS", "en": "FPS"},
     "label_fps_override":     {"ko": "FPS 강제", "en": "FPS Override"},
     "label_fps_auto":         {"ko": "Auto", "en": "Auto"},
+    "fps_custom":             {"ko": "직접 입력", "en": "Custom"},
     "fps_unknown":            {"ko": "(영상 없음)", "en": "(no video)"},
+    "tooltip_fps_custom": {
+        "ko": "원하는 FPS를 소수점 3자리까지 직접 입력합니다.",
+        "en": "Enter a custom FPS value up to 3 decimal places."},
     "tooltip_fps_override": {
         "ko": ("입력 fps를 강제로 지정합니다. <b>Auto</b>는 자동 인식값 사용. "
                "주로 AI 영상(Seedance 등) 메타데이터가 24.04 같은 어중간한 "

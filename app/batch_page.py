@@ -18,10 +18,11 @@ from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QDragEnterEvent, QDropEvent, QBrush, QColor, QPalette
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                               QLabel, QListWidget, QListWidgetItem, QSplitter,
-                              QScrollArea, QSpinBox, QComboBox, QGroupBox,
-                              QFileDialog, QProgressBar, QMessageBox,
-                              QAbstractItemView, QFormLayout, QSizePolicy,
-                              QLineEdit, QMenu, QShortcut, QCheckBox)
+                              QScrollArea, QSpinBox, QDoubleSpinBox, QComboBox,
+                              QGroupBox, QFileDialog, QProgressBar,
+                              QMessageBox, QAbstractItemView, QFormLayout,
+                              QSizePolicy, QLineEdit, QMenu, QShortcut,
+                              QCheckBox)
 
 from app.mask_editor_dialog import MaskEditorDialog
 from app.aspect_ratio_option import AspectRatioMode
@@ -508,15 +509,41 @@ class BatchPage(QWidget):
         self.fin_fps_override = QComboBox()
         for value, text in _STANDARD_FPS_OPTIONS:
             self.fin_fps_override.addItem(text, value)
+        self.fin_fps_override.addItem(tr("fps_custom"), -1.0)
         self.fin_fps_override.setCurrentIndex(
             _STANDARD_FPS_OPTIONS.index((24.0, "24")))
         self.fin_fps_override.setEnabled(False)
         self.fin_fps_override.setToolTip(tr("tooltip_fps_override"))
-        self.fin_fps_auto.toggled.connect(
-            lambda checked: self.fin_fps_override.setEnabled(not checked))
+
+        self.fin_fps_custom_spin = QDoubleSpinBox()
+        self.fin_fps_custom_spin.setRange(0.001, 1000.0)
+        self.fin_fps_custom_spin.setDecimals(3)
+        self.fin_fps_custom_spin.setSingleStep(1.0)
+        self.fin_fps_custom_spin.setValue(24.000)
+        self.fin_fps_custom_spin.setToolTip(tr("tooltip_fps_custom"))
+        self.fin_fps_custom_spin.setVisible(False)
+        self.fin_fps_custom_spin.setEnabled(False)
+
+        def _on_fin_fps_auto_toggled(checked: bool):
+            self.fin_fps_override.setEnabled(not checked)
+            is_custom = (not checked) and (self.fin_fps_override.currentData() == -1.0)
+            self.fin_fps_custom_spin.setEnabled(is_custom)
+            self.fin_fps_custom_spin.setVisible(is_custom)
+
+        def _on_fin_fps_override_changed(_idx: int):
+            is_custom = (not self.fin_fps_auto.isChecked()) and (self.fin_fps_override.currentData() == -1.0)
+            self.fin_fps_custom_spin.setEnabled(is_custom)
+            self.fin_fps_custom_spin.setVisible(is_custom)
+            self._refresh_fps_snap_label()
+
+        self.fin_fps_auto.toggled.connect(_on_fin_fps_auto_toggled)
         self.fin_fps_auto.toggled.connect(self._refresh_fps_snap_label)
+        self.fin_fps_override.currentIndexChanged.connect(_on_fin_fps_override_changed)
+        self.fin_fps_custom_spin.valueChanged.connect(self._refresh_fps_snap_label)
+
         fin_fps_h.addWidget(self.fin_fps_auto)
         fin_fps_h.addWidget(self.fin_fps_override, 1)
+        fin_fps_h.addWidget(self.fin_fps_custom_spin, 1)
         fin_lay.addRow(QLabel(tr("label_fps_override") + ":"), fin_fps_row)
 
         # Live snap-preview: "선택 클립: 24.04 → 24.00 (스냅됨)". Updated
@@ -1001,12 +1028,19 @@ class BatchPage(QWidget):
         final = {
             "aspect_mode": self.fin_aspect.mode(),
             "target_long_edge": int(self.fin_target.currentData() or 0),
-            "fps_override": (0.0 if self.fin_fps_auto.isChecked()
-                             else float(self.fin_fps_override.currentData())),
+            "fps_override": self._get_fin_override_fps(),
             "output_format": self.fin_codec.codec(),
             "prores_profile": self.fin_codec.prores_profile(),
         }
         return inpaint, denoise, upscale, final
+
+    def _get_fin_override_fps(self) -> float:
+        if self.fin_fps_auto.isChecked():
+            return 0.0
+        val = float(self.fin_fps_override.currentData() or 0.0)
+        if val <= 0:
+            return float(self.fin_fps_custom_spin.value())
+        return val
 
     def _run(self):
         if not self._files:

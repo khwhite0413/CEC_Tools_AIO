@@ -52,7 +52,7 @@ AI 영상 후처리 통합 데스크톱 도구. PyQt5 기반. 인페인트 / 디
 - **전체 처리** — 사용자 지정 출력 경로 + 코덱
 - **FPS 표시 + 강제** — 우측 패널 상단의 "FPS" 라벨에 자동 스냅된 effective fps 표시.
   Dev 모드 → FPS Override의 Auto 해제 → 표준 rate(23.976/24/25/29.97/30/50/59.94/60)
-  선택 시 리더(-vf fps=)와 라이터(-r) 둘 다에 강제 적용. 디노이즈/업스케일 탭과 동일
+  또는 "직접 입력"(소수점 3자리 float) 선택 시 리더(-vf fps=)와 라이터(-r) 둘 다에 강제 적용. 디노이즈/업스케일/배치 탭과 동일
 - 파라미터 (기본): 모델, Max batch frames, 마스크 확장 (px)
 - 파라미터 (Dev 모드): FP16, neighbor / ref_stride / subvideo / raft_iter, FPS Override
 

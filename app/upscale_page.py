@@ -18,8 +18,8 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                               QPushButton, QFileDialog, QProgressBar,
                               QPlainTextEdit, QMessageBox, QScrollArea,
                               QSplitter, QLineEdit, QGroupBox, QSpinBox,
-                              QCheckBox, QComboBox, QFormLayout, QFrame,
-                              QSizePolicy)
+                              QDoubleSpinBox, QCheckBox, QComboBox,
+                              QFormLayout, QFrame, QSizePolicy)
 
 from app.i18n import tr
 from app.video_player import VideoPlayer
@@ -305,18 +305,42 @@ class UpscalePage(QWidget):
         self.fps_override = QComboBox()
         for value, text in _STANDARD_FPS_OPTIONS:
             self.fps_override.addItem(text, value)
+        self.fps_override.addItem(tr("fps_custom"), -1.0)
         self.fps_override.setCurrentIndex(
             _STANDARD_FPS_OPTIONS.index((24.0, "24")))
         self.fps_override.setEnabled(False)
         self.fps_override.setToolTip(tr("tooltip_fps_override"))
+
+        self.fps_custom_spin = QDoubleSpinBox()
+        self.fps_custom_spin.setRange(0.001, 1000.0)
+        self.fps_custom_spin.setDecimals(3)
+        self.fps_custom_spin.setSingleStep(1.0)
+        self.fps_custom_spin.setValue(24.000)
+        self.fps_custom_spin.setToolTip(tr("tooltip_fps_custom"))
+        self.fps_custom_spin.setVisible(False)
+        self.fps_custom_spin.setEnabled(False)
+
         fps_h.addWidget(self.fps_auto_check)
         fps_h.addWidget(self.fps_override, 1)
+        fps_h.addWidget(self.fps_custom_spin, 1)
         adv.addRow(tr("label_fps_override"), fps_row)
-        self.fps_auto_check.toggled.connect(
-            lambda checked: self.fps_override.setEnabled(not checked))
+
+        def _on_fps_auto_toggled(checked: bool):
+            self.fps_override.setEnabled(not checked)
+            is_custom = (not checked) and (self.fps_override.currentData() == -1.0)
+            self.fps_custom_spin.setEnabled(is_custom)
+            self.fps_custom_spin.setVisible(is_custom)
+
+        def _on_fps_override_changed(_idx: int):
+            is_custom = (not self.fps_auto_check.isChecked()) and (self.fps_override.currentData() == -1.0)
+            self.fps_custom_spin.setEnabled(is_custom)
+            self.fps_custom_spin.setVisible(is_custom)
+            self._refresh_effective_fps_label()
+
+        self.fps_auto_check.toggled.connect(_on_fps_auto_toggled)
         self.fps_auto_check.toggled.connect(self._refresh_effective_fps_label)
-        self.fps_override.currentIndexChanged.connect(
-            self._refresh_effective_fps_label)
+        self.fps_override.currentIndexChanged.connect(_on_fps_override_changed)
+        self.fps_custom_spin.valueChanged.connect(self._refresh_effective_fps_label)
 
         box_lay.addWidget(self._adv_widget)
 
@@ -425,13 +449,19 @@ class UpscalePage(QWidget):
             float(fps) if (fps is not None and fps > 0) else None)
         self._refresh_effective_fps_label()
 
+    def _get_override_fps(self) -> float:
+        val = float(self.fps_override.currentData() or 0.0)
+        if val <= 0:
+            return float(self.fps_custom_spin.value())
+        return val
+
     def _refresh_effective_fps_label(self) -> None:
         if self._detected_fps is None:
             self.effective_fps_label.setText(tr("fps_unknown"))
             return
         if (self.dev_mode.isChecked()
                 and not self.fps_auto_check.isChecked()):
-            val = float(self.fps_override.currentData())
+            val = self._get_override_fps()
             self.effective_fps_label.setText(f"{val:.3f}")
         else:
             self.effective_fps_label.setText(f"{self._detected_fps:.3f}")
@@ -643,7 +673,7 @@ class UpscalePage(QWidget):
             # fps_override only takes effect when Dev mode is on AND
             # the Auto checkbox is unchecked. 0 = auto (worker falls
             # back to info.effective_fps).
-            "fps_override": (float(self.fps_override.currentData())
+            "fps_override": (self._get_override_fps()
                              if (self.dev_mode.isChecked()
                                  and not self.fps_auto_check.isChecked())
                              else 0.0),

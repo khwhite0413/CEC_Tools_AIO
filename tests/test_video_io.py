@@ -469,5 +469,50 @@ class FpsOverrideTests(unittest.TestCase):
         self.assertIn("fps=24.0", " ".join(captured[1]))
 
 
+class SingleImageSupportTests(unittest.TestCase):
+    """Verify single image detection, reading, and writing."""
+
+    def setUp(self):
+        import tempfile
+        import os
+        import cv2
+        self.tmp_dir = tempfile.mkdtemp()
+        self.img_path = os.path.join(self.tmp_dir, "test.png")
+        self.test_img = np.zeros((100, 150, 3), dtype=np.uint8)
+        self.test_img[20:80, 30:120] = [0, 255, 128]
+        cv2.imwrite(self.img_path, self.test_img)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    def test_is_image_file(self):
+        self.assertTrue(video_io.is_image_file(self.img_path))
+        self.assertFalse(video_io.is_image_file("fake.mp4"))
+        self.assertFalse(video_io.is_image_file(None))
+
+    def test_single_image_probe(self):
+        info = video_io.probe(self.img_path)
+        self.assertEqual(info.width, 150)
+        self.assertEqual(info.height, 100)
+        self.assertEqual(info.frame_count, 1)
+        self.assertFalse(info.has_audio)
+
+    def test_read_frames_bgr_image(self):
+        frames = video_io.read_frames_bgr(self.img_path)
+        self.assertEqual(len(frames), 1)
+        self.assertEqual(frames[0].shape, (100, 150, 3))
+        self.assertTrue(np.array_equal(frames[0], self.test_img))
+
+    def test_single_image_writer(self):
+        import os
+        out_path = os.path.join(self.tmp_dir, "out.jpg")
+        writer = video_io.SingleImageWriter(out_path, width=150, height=100)
+        writer.write(self.test_img)
+        writer.release()
+        self.assertTrue(os.path.exists(out_path))
+
+
 if __name__ == "__main__":
     unittest.main()
+

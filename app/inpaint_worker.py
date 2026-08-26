@@ -22,7 +22,8 @@ from PyQt5.QtCore import QThread, pyqtSignal
 # uint16 via bgr24_to_bgr48le right before writing — the upcast is
 # lossless and gives ProPainter / OpenProteus tabs the same color
 # fidelity FlowDenoise has had since v1.0.0.
-from fdcore.video_io import VideoInfo, FFmpegWriter, bgr24_to_bgr48le
+from fdcore.video_io import (VideoInfo, FFmpegWriter, SingleImageWriter,
+                             is_image_file, bgr24_to_bgr48le)
 from vdcore.video_io import read_frames_batch
 from vdcore.mask_manager import mask_to_binary
 from vdcore.inpaint_engine import InpaintEngine
@@ -126,14 +127,23 @@ class InpaintWorker(QThread):
             else:
                 num_batches = (total_frames + max_batch - 1) // max_batch
 
-            writer = FFmpegWriter(
-                self.output_path,
-                effective_fps,
-                info.width, info.height,
-                source_path=self.video_path,
-                color_tags=info.color_tags(),
-                output_format=self.settings.get("output_format", "h264"),
-                prores_profile=self.settings.get("prores_profile", "4444"))
+            is_img_out = (is_image_file(self.output_path) or
+                          self.settings.get("output_format") in ("png", "jpg", "jpeg"))
+            if is_img_out:
+                writer = SingleImageWriter(
+                    self.output_path,
+                    effective_fps,
+                    info.width, info.height,
+                    source_path=self.video_path)
+            else:
+                writer = FFmpegWriter(
+                    self.output_path,
+                    effective_fps,
+                    info.width, info.height,
+                    source_path=self.video_path,
+                    color_tags=info.color_tags(),
+                    output_format=self.settings.get("output_format", "h264"),
+                    prores_profile=self.settings.get("prores_profile", "4444"))
 
             engine = InpaintEngine(
                 self.device, fp16=bool(self.settings.get("fp16", True)))
@@ -197,7 +207,10 @@ class InpaintWorker(QThread):
                     result = frame.copy()
                     if i < len(inpainted):
                         result[y1:y2, x1:x2] = inpainted[i]
-                    writer.write(bgr24_to_bgr48le(result))
+                    if is_img_out:
+                        writer.write(result)
+                    else:
+                        writer.write(bgr24_to_bgr48le(result))
 
                 processed += batch_count
                 self.progress.emit(processed, total_frames)

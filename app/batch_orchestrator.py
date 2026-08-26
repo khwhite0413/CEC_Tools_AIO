@@ -48,6 +48,7 @@ import cv2
 import numpy as np
 from PyQt5.QtCore import QEventLoop, QObject, QThread, Qt, pyqtSignal
 
+from fdcore.video_io import is_image_file
 from fdcore.transcode import is_noop as _final_is_noop
 from vdcore.config import get_device
 from app.inpaint_worker import InpaintWorker
@@ -113,8 +114,19 @@ def resolve_output_dir(today: Optional[date] = None,
         "뒤 다시 시도하세요.")
 
 
-def _ext_for_codec(codec: str) -> str:
-    return ".mov" if codec == "prores" else ".mp4"
+def _ext_for_codec(codec: str, src_path: str = None) -> str:
+    c = (codec or "").lower()
+    if c == "prores":
+        return ".mov"
+    elif c == "png":
+        return ".png"
+    elif c in ("jpg", "jpeg"):
+        return ".jpg"
+    elif c == "h264":
+        return ".mp4"
+    if src_path and is_image_file(src_path):
+        return os.path.splitext(src_path)[1].lower()
+    return ".mp4"
 
 
 def _wipe_dir(path: str) -> None:
@@ -162,12 +174,18 @@ def _compute_dreamina_mask(video_path: str,
     on each side. Used when the Dreamina preset doesn't quite cover the
     watermark and the user wants a safety margin without redrawing.
     """
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        return None
-    vw = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    vh = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    cap.release()
+    if is_image_file(video_path):
+        img = cv2.imread(video_path)
+        if img is None:
+            return None
+        vh, vw = img.shape[:2]
+    else:
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            return None
+        vw = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        vh = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        cap.release()
     if vw <= 0 or vh <= 0:
         return None
 
@@ -414,11 +432,7 @@ class BatchOrchestrator(QThread):
                 if self._cancel:
                     self.cancelled.emit()
                     return
-                is_last = (stage_idx == len(stages) - 1)
-
                 codec = stage["settings"].get("output_format", "h264")
-                ext = _ext_for_codec(codec)
-
                 if is_last:
                     target_dir = out_dir
                 else:
@@ -430,6 +444,7 @@ class BatchOrchestrator(QThread):
                     if self._cancel:
                         self.cancelled.emit()
                         return
+                    ext = _ext_for_codec(codec, src)
                     # Stem comes from the ORIGINAL source so all stages
                     # produce a consistently-named file ("scene_01.mp4"
                     # all the way through), regardless of which

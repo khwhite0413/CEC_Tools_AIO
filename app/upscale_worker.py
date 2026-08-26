@@ -23,7 +23,8 @@ from PyQt5.QtCore import QThread, pyqtSignal
 # upscaler output is widened to uint16 via bgr24_to_bgr48le right
 # before each writer.write so the fdcore writer's bgr48le pipe gets
 # the byte count it expects.
-from fdcore.video_io import VideoInfo, FFmpegWriter, bgr24_to_bgr48le
+from fdcore.video_io import (VideoInfo, FFmpegWriter, SingleImageWriter,
+                             is_image_file, bgr24_to_bgr48le)
 from vdcore.video_io import read_frames_batch
 
 
@@ -438,14 +439,23 @@ class UpscaleWorker(QThread):
             post_interp = (cv2.INTER_LANCZOS4
                            if out_w > model_w else cv2.INTER_AREA)
 
-            writer = FFmpegWriter(
-                self.output_path,
-                effective_fps,
-                final_w, final_h,
-                source_path=self.video_path,
-                color_tags=info.color_tags(),
-                output_format=self.settings.get("output_format", "h264"),
-                prores_profile=self.settings.get("prores_profile", "4444"))
+            is_img_out = (is_image_file(self.output_path) or
+                          self.settings.get("output_format") in ("png", "jpg", "jpeg"))
+            if is_img_out:
+                writer = SingleImageWriter(
+                    self.output_path,
+                    effective_fps,
+                    final_w, final_h,
+                    source_path=self.video_path)
+            else:
+                writer = FFmpegWriter(
+                    self.output_path,
+                    effective_fps,
+                    final_w, final_h,
+                    source_path=self.video_path,
+                    color_tags=info.color_tags(),
+                    output_format=self.settings.get("output_format", "h264"),
+                    prores_profile=self.settings.get("prores_profile", "4444"))
 
             self.phase_changed.emit("processing")
 
@@ -475,7 +485,10 @@ class UpscaleWorker(QThread):
                     if need_crop:
                         up = up[crop_y:crop_y + final_h,
                                 crop_x:crop_x + final_w]
-                    writer.write(bgr24_to_bgr48le(up))
+                    if is_img_out:
+                        writer.write(up)
+                    else:
+                        writer.write(bgr24_to_bgr48le(up))
                     if (i + 1) % 4 == 0:
                         # batch-internal progress so the UI doesn't sit
                         # silent for long batches.

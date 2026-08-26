@@ -71,7 +71,7 @@ from app.batch_orchestrator import (BatchOrchestrator, STAGE_INPAINT,
 
 
 def _probe_meta(path: str) -> str:
-    """Probe a video for a short single-line metadata string.
+    """Probe a video or image file for a short single-line metadata string.
 
     Surfaces the RAW container fps (info.fps) so the queue row reflects
     what the file actually is — not what the pipeline will produce after
@@ -83,7 +83,13 @@ def _probe_meta(path: str) -> str:
     filename + status, just no resolution.
     """
     try:
-        from fdcore.video_io import VideoInfo
+        from fdcore.video_io import is_image_file, VideoInfo
+        if is_image_file(path):
+            img = cv2.imread(path)
+            if img is not None:
+                h, w = img.shape[:2]
+                ext = os.path.splitext(path)[1].lstrip(".").upper()
+                return f"{w}×{h} · 1f · {ext}"
         info = VideoInfo(path)
         raw_fps = info.fps or 0.0
         dur = info.duration if info.duration else 0.0
@@ -107,19 +113,28 @@ _PRORES_LABELS = {
 }
 
 _VIDEO_EXTS = (".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v")
+_IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif", ".tga")
+_SUPPORTED_EXTS = _VIDEO_EXTS + _IMAGE_EXTS
 
 
 def _is_video(path: str) -> bool:
     return os.path.splitext(path)[1].lower() in _VIDEO_EXTS
 
 
+def _is_image(path: str) -> bool:
+    return os.path.splitext(path)[1].lower() in _IMAGE_EXTS
+
+
+def _is_supported(path: str) -> bool:
+    return os.path.splitext(path)[1].lower() in _SUPPORTED_EXTS
+
+
 class _CodecCard(QWidget):
     """Mini card: codec radio + ProRes profile drawer.
 
-    Used three times on the batch page (one per stage). Default codec is
-    H.264 — the user said "보편적인게 최고" so all three start there. The
-    profile combo is hidden until ProRes is chosen, mirroring the
-    Inpaint/Upscale "ProRes drawer" pattern.
+    Used three times on the batch page (one per stage) and for Final Output.
+    Default codec is H.264. Supports H.264, ProRes, PNG, JPEG.
+    The profile combo is hidden until ProRes is chosen.
     """
 
     def __init__(self, title: str, parent: Optional[QWidget] = None):
@@ -131,6 +146,8 @@ class _CodecCard(QWidget):
         self.codec_combo = QComboBox()
         self.codec_combo.addItem(tr("batch_codec_h264"), "h264")
         self.codec_combo.addItem(tr("batch_codec_prores"), "prores")
+        self.codec_combo.addItem(tr("batch_codec_png"), "png")
+        self.codec_combo.addItem(tr("batch_codec_jpg"), "jpg")
         self.codec_combo.currentIndexChanged.connect(self._on_codec_changed)
         lay.addRow(QLabel(tr("batch_label_codec") + ":"), self.codec_combo)
 
@@ -192,9 +209,9 @@ class _QueueList(QListWidget):
             if os.path.isdir(p):
                 for name in sorted(os.listdir(p)):
                     full = os.path.join(p, name)
-                    if os.path.isfile(full) and _is_video(full):
+                    if os.path.isfile(full) and _is_supported(full):
                         paths.append(full)
-            elif _is_video(p):
+            elif _is_supported(p):
                 paths.append(p)
         if paths:
             self.files_dropped.emit(paths)
@@ -652,7 +669,7 @@ class BatchPage(QWidget):
     def _pick_files(self):
         paths, _ = QFileDialog.getOpenFileNames(
             self, tr("batch_pick_files"), "",
-            "비디오 (*.mp4 *.mov *.mkv *.avi *.webm *.m4v);;모든 파일 (*.*)")
+            "비디오 및 이미지 (*.mp4 *.mov *.mkv *.avi *.webm *.m4v *.png *.jpg *.jpeg *.webp *.bmp);;비디오 (*.mp4 *.mov *.mkv *.avi *.webm *.m4v);;이미지 (*.png *.jpg *.jpeg *.webp *.bmp);;모든 파일 (*.*)")
         if paths:
             self._add_files(paths)
 
@@ -891,7 +908,10 @@ class BatchPage(QWidget):
         # Probe first selected clip only. Multi-select shows the count
         # so the user knows the label refers to a single representative.
         try:
-            from fdcore.video_io import VideoInfo
+            from fdcore.video_io import is_image_file, VideoInfo
+            if is_image_file(sel_paths[0]):
+                self.fin_fps_snap.setText(tr("batch_fps_snap_empty"))
+                return
             info = VideoInfo(sel_paths[0])
             src_fps = float(info.fps or 0.0)
             snapped = float(info.effective_fps or src_fps)

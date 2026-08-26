@@ -27,11 +27,44 @@ import cv2
 
 
 _DEFAULT_SEQ_PATTERN = "frame_%06d.png"
+_IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif", ".tga")
 
 
 def is_image_sequence(path: str) -> bool:
     return bool(path) and os.path.isdir(path) and os.path.exists(
         os.path.join(path, "meta.json"))
+
+
+def is_image_file(path: str) -> bool:
+    """True if path points to a recognized single image file."""
+    if not path or not isinstance(path, str):
+        return False
+    return os.path.isfile(path) and os.path.splitext(path)[1].lower() in _IMAGE_EXTS
+
+
+class SingleImageInfo:
+    """Mirrors VideoInfo's interface so callers can handle single image files."""
+
+    def __init__(self, path: str):
+        self.path = path
+        img = cv2.imread(path)
+        if img is None:
+            raise ValueError(f"Cannot read image file: {path}")
+        self.height, self.width = img.shape[:2]
+        self.fps = 30.0
+        self.effective_fps = 30.0
+        self.frame_count = 1
+        self.duration = 1.0 / 30.0
+        self.has_audio = False
+        ext = os.path.splitext(path)[1].lower().lstrip(".")
+        self.codec_name = ext
+        self.color_primaries = None
+        self.color_trc = None
+        self.color_space = None
+        self.color_range = "pc"
+
+    def color_tags(self) -> dict:
+        return {}
 
 
 class ImageSequenceInfo:
@@ -51,9 +84,11 @@ class ImageSequenceInfo:
 
 
 def probe(path: str):
-    """Polymorphic dispatch — image sequence dir or video file."""
+    """Polymorphic dispatch — image sequence dir, single image file, or video file."""
     if is_image_sequence(path):
         return ImageSequenceInfo(path)
+    if is_image_file(path):
+        return SingleImageInfo(path)
     return VideoInfo(path)
 
 
@@ -695,6 +730,7 @@ class StreamingFrameReader:
     def __init__(self, path: str, fps: float = None):
         if is_image_sequence(path):
             self._is_seq = True
+            self._is_single_img = False
             info = ImageSequenceInfo(path)
             cap_path = os.path.join(path, info.pattern)
             self._cap = cv2.VideoCapture(cap_path, cv2.CAP_IMAGES)
@@ -707,8 +743,22 @@ class StreamingFrameReader:
             self._fps = float(fps) if fps and fps > 0 else float(
                 getattr(info, "fps", None) or 24.0)
             self._has_audio = False
+        elif is_image_file(path):
+            self._is_seq = False
+            self._is_single_img = True
+            info = SingleImageInfo(path)
+            self._cap = None
+            self._reader = None
+            self._single_img_path = path
+            self._single_img_read = False
+            self._frame_count = 1
+            self._width = int(info.width)
+            self._height = int(info.height)
+            self._fps = float(fps) if fps and fps > 0 else 30.0
+            self._has_audio = False
         else:
             self._is_seq = False
+            self._is_single_img = False
             self._reader = FFmpegReader(path, fps=fps)
             self._cap = None
             self._frame_count = int(self._reader.frame_count)
@@ -739,6 +789,11 @@ class StreamingFrameReader:
 
     def read(self):
         """Return next frame or None on EOF. Never raises on end-of-stream."""
+        if self._is_single_img:
+            if self._single_img_read:
+                return None
+            self._single_img_read = True
+            return cv2.imread(self._single_img_path)
         if self._is_seq:
             if self._cap is None:
                 return None
@@ -784,6 +839,12 @@ def read_frames_bgr(path: str, start: int = 0, count: int = -1,
     Used by the pipeline when the user supplies an fps_override setting.
     Ignored for image sequences.
     """
+    if is_image_file(path):
+        if start > 0:
+            return []
+        img = cv2.imread(path)
+        return [img] if img is not None else []
+
     if is_image_sequence(path):
         info = ImageSequenceInfo(path)
         cap_path = os.path.join(path, info.pattern)
@@ -1151,3 +1212,32 @@ class ImageSequenceWriter:
         with open(os.path.join(self.output_dir, "meta.json"),
                   "w", encoding="utf-8") as f:
             json.dump(meta, f, indent=2)
+
+
+class SingleImageWriter:
+    """Save a single frame directly as an image file (PNG, JPG, etc.).
+    Same write/release contract as FFmpegWriter."""
+
+    def __init__(self, output_path: str, fps: float = 30.0,
+                 width: int = 0, height: int = 0, source_path: str = None,
+                 **kwargs):
+        self.output_path = output_path
+        self.fps = float(fps) if fps else 30.0
+        self.width = int(width)
+        self.height = int(height)
+        os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+        self._written = False
+
+    def write(self, frame_bgr):
+        if not self._written:
+            out = frame_bgr
+            ext = os.path.splitext(self.output_path)[1].lower()
+            if isinstance(out, np.ndarray) and out.dtype == np.uint16:
+                if ext in (".jpg", ".jpeg", ".webp"):
+                    out = (out / 257.0).clip(0, 255).astype(np.uint8)
+            cv2.imwrite(self.output_path, out)
+            self._written = True
+
+    def release(self):
+        pass
+

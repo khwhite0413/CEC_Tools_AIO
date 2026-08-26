@@ -34,7 +34,9 @@ import subprocess
 import time
 from typing import Callable, Optional
 
-from fdcore.video_io import (VideoInfo, _get_ffmpeg, _snap_fps)
+import cv2
+from fdcore.video_io import (VideoInfo, _get_ffmpeg, _snap_fps,
+                             is_image_file, read_frames_bgr)
 
 
 # ProRes profile → ffmpeg profile int, mirrors fdcore.video_io's mapping
@@ -144,10 +146,6 @@ def is_noop(source_path: str, settings: dict) -> bool:
     are also off, this state means "nothing to do" and BatchPage._run
     surfaces the `batch_no_changes` error instead of spawning an ffmpeg
     pass that would just re-encode the source into h264 for no reason.
-
-    NOTE: `source_path` is currently unused but kept for signature
-    stability — callers were already threading it, and future logic
-    (e.g. "match source codec" combobox item) will want it back.
     """
     del source_path  # placeholder for future match-source semantics
     aspect_mode = (settings.get("aspect_mode") or "none").lower()
@@ -200,6 +198,38 @@ def run_transcode_only(
         out_fps = fps_override
     else:
         out_fps = _snap_fps(info.effective_fps or info.fps or 30.0)
+
+    # Direct image-to-image or video-to-image single frame output path
+    is_img_out = is_image_file(output_path) or final_codec in ("png", "jpg", "jpeg")
+    if is_img_out:
+        frames = read_frames_bgr(input_path, 0, 1)
+        if not frames:
+            raise RuntimeError(f"프레임을 읽을 수 없습니다: {input_path}")
+        img = frames[0]
+        geom = _resolve_aspect_geometry(src_w, src_h, aspect_mode, target_long)
+        if geom is not None and geom[0] == "cover":
+            _, tw, th, sw, sh = geom
+            img = cv2.resize(img, (sw, sh), interpolation=cv2.INTER_LANCZOS4)
+            cx = max(0, (sw - tw) // 2)
+            cy = max(0, (sh - th) // 2)
+            img = img[cy:cy + th, cx:cx + tw]
+        else:
+            resize = _resolve_resize(src_w, src_h, target_long)
+            if resize is not None:
+                img = cv2.resize(img, resize, interpolation=cv2.INTER_LANCZOS4)
+            if geom is not None and geom[0] == "crop":
+                cur_w, cur_h = img.shape[1], img.shape[0]
+                geom2 = _resolve_aspect_geometry(cur_w, cur_h, "crop")
+                if geom2 is not None:
+                    _, gw, gh = geom2
+                    cx = max(0, (cur_w - gw) // 2)
+                    cy = max(0, (cur_h - gh) // 2)
+                    img = img[cy:cy + gh, cx:cx + gw]
+        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+        cv2.imwrite(output_path, img)
+        if progress_cb:
+            progress_cb(1, 1)
+        return
 
     # -------------------- filter graph --------------------
     # Order:
@@ -275,6 +305,7 @@ def run_transcode_only(
         ffmpeg, "-hide_banner", "-y",
         "-i", input_path,
         "-vf", ",".join(filters),
+        "-r", f"{out_fps:.6f}",
         *codec_args,
         *audio_args,
         # Progress on pipe:1 — ffmpeg writes `frame=N\nout_time_ms=…\n`

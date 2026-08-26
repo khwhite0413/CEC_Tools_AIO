@@ -222,7 +222,11 @@ def run_on_file(input_path: str, output_path: str, settings: dict,
             total_frames = min(total_frames, frame_cap)
 
         # Main writer (denoised output).
-        if fmt == "image_seq":
+        is_img_out = video_io.is_image_file(output_path) or fmt in ("png", "jpg", "jpeg")
+        if is_img_out and total_frames <= 1:
+            writer = video_io.SingleImageWriter(
+                output_path, effective_fps, w, h, source_path=input_path)
+        elif fmt == "image_seq":
             writer = video_io.ImageSequenceWriter(
                 output_path, effective_fps, w, h, source_path=input_path)
         else:

@@ -15,6 +15,13 @@ import cv2
 import numpy as np
 
 
+_IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif", ".tga")
+
+
+def is_image_file(path: str) -> bool:
+    return bool(path) and os.path.isfile(path) and os.path.splitext(path)[1].lower() in _IMAGE_EXTS
+
+
 class VideoInfo:
     """Thin cv2 probe — width / height / fps / frame_count / duration.
 
@@ -26,6 +33,15 @@ class VideoInfo:
 
     def __init__(self, path):
         self.path = path
+        if is_image_file(path):
+            img = cv2.imread(path)
+            if img is None:
+                raise ValueError(f"Cannot open image: {path}")
+            self.fps = 30.0
+            self.frame_count = 1
+            self.height, self.width = img.shape[:2]
+            self.duration = 1.0 / 30.0
+            return
         cap = cv2.VideoCapture(path)
         if not cap.isOpened():
             raise ValueError(f"Cannot open video: {path}")
@@ -64,6 +80,11 @@ def read_frames_batch(path, start, count, fps=None):
     """
     if count <= 0:
         return []
+    if is_image_file(path):
+        if start > 0:
+            return []
+        img = cv2.imread(path)
+        return [img] if img is not None else []
     try:
         info = VideoInfo(path)
     except Exception:

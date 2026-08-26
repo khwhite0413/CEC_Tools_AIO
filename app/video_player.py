@@ -14,7 +14,7 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                               QMenu, QFileDialog, QMessageBox)
 
 from fdcore.video_io import (VideoInfo, ImageSequenceInfo, is_image_sequence,
-                              probe as _probe_video)
+                              is_image_file, probe as _probe_video)
 from app.i18n import tr
 from app.viewport_controller import ViewportController
 
@@ -767,13 +767,19 @@ class VideoPlayer(QWidget):
             self._cap = None
 
     def _show_frame_at(self, idx: int):
-        if not self._cap or not self.video_info:
+        if not self.video_info:
             return
-        cur = int(self._cap.get(cv2.CAP_PROP_POS_FRAMES))
-        if idx != cur:
-            self._cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-        ret, frame = self._cap.read()
-        if not ret:
+        if is_image_file(self.video_path):
+            frame = cv2.imread(self.video_path)
+            ret = frame is not None
+        elif not self._cap:
+            return
+        else:
+            cur = int(self._cap.get(cv2.CAP_PROP_POS_FRAMES))
+            if idx != cur:
+                self._cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+            ret, frame = self._cap.read()
+        if not ret or frame is None:
             self.pause()
             return
         frame = self._composite_with_before(frame, idx)

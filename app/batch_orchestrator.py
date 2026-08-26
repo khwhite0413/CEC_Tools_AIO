@@ -432,6 +432,7 @@ class BatchOrchestrator(QThread):
                 if self._cancel:
                     self.cancelled.emit()
                     return
+                is_last = (stage_idx == len(stages) - 1)
                 codec = stage["settings"].get("output_format", "h264")
                 if is_last:
                     target_dir = out_dir

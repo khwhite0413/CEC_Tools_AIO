@@ -779,9 +779,16 @@ class BatchPage(QWidget):
             self.queue_list.addItem(item)
             if p in prev_selected:
                 item.setSelected(True)
-        self.queue_box.setTitle(
-            tr("batch_queue_title").format(n=len(self._files)))
+        self._refresh_queue_title()
         self.queue_hint.setVisible(not self._files)
+
+    def _refresh_queue_title(self, stage_label: str = "", file_idx: int = 0,
+                             file_total: int = 0):
+        base = tr("batch_queue_title").format(n=len(self._files))
+        if stage_label and file_total > 0:
+            self.queue_box.setTitle(f"{base}  ·  [{stage_label}] {file_idx}/{file_total}")
+        else:
+            self.queue_box.setTitle(base)
 
     # Maps stage key -> i18n key for the short "Inpaint / Denoise /
     # Upscale" label used inside running and stage-done text.
@@ -1189,6 +1196,9 @@ class BatchPage(QWidget):
     def _on_progress(self, stage: str, file_idx: int, file_total: int,
                      done: int, total: int):
         stage_label = tr(self._STAGE_LABEL_KEY.get(stage, ""))
+        self._refresh_queue_title(stage_label=stage_label,
+                                  file_idx=file_idx,
+                                  file_total=file_total)
         fname = ""
         if 0 <= file_idx - 1 < len(self._files):
             fname = os.path.basename(self._files[file_idx - 1])
@@ -1252,16 +1262,18 @@ class BatchPage(QWidget):
     def _on_error(self, msg: str):
         self._set_running(False)
         self.chunk_progress_bar.setVisible(False)
+        self._refresh_queue_title()
         self.status_label.setText(tr("batch_status_error").format(msg=msg))
         self.progress.setPalette(self._progress_cancel_palette)
         self._stop_spinner_and_mark_row(_COLOR_ERROR, tr("batch_status_error")
-                                        .format(msg=msg))
+                                         .format(msg=msg))
         QMessageBox.critical(self, "Batch", msg)
         self._orchestrator = None
 
     def _on_cancelled(self):
         self._set_running(False)
         self.chunk_progress_bar.setVisible(False)
+        self._refresh_queue_title()
         self.status_label.setText(tr("batch_status_cancelled"))
         # Soft red — matches the Denoise tab's cancel state and our
         # error palette, so the user reads "interrupted" at a glance.
@@ -1272,6 +1284,7 @@ class BatchPage(QWidget):
     def _on_all_done(self, output_dir: str):
         self._set_running(False)
         self.chunk_progress_bar.setVisible(False)
+        self._refresh_queue_title()
         self.progress.setValue(100)
         self.progress.setPalette(self._progress_done_palette)
         self.status_label.setText(tr("batch_status_done").format(

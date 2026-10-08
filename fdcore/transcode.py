@@ -31,6 +31,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import tempfile
 import time
 from typing import Callable, Optional
 
@@ -325,14 +326,20 @@ def run_transcode_only(
         total_frames = int(info.frame_count or 0)
     frame_re = re.compile(rb"^frame=(\d+)")
 
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        stdin=subprocess.DEVNULL,
-    )
+    # stderr must not be an unread PIPE: long FFmpeg runs can fill the OS pipe
+    # buffer and block at the very end, leaving the batch UI stuck on
+    # "포맷 정규화" even though the encoded file is already complete.
+    stderr_store = tempfile.TemporaryFile()
+    proc = None
+    rc = None
     last_report = 0.0
     try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=stderr_store,
+            stdin=subprocess.DEVNULL,
+        )
         assert proc.stdout is not None
         for raw in proc.stdout:
             if cancel_cb is not None and cancel_cb():
@@ -349,11 +356,30 @@ def run_transcode_only(
                     last_report = now
         rc = proc.wait()
     finally:
-        # Drain stderr so the pipe buffer doesn't wedge a stuck ffmpeg.
+        # Reap the child on cancellation, read failure, or any callback
+        # exception. Closing stderr while FFmpeg is still alive can race with
+        # its final log write and leak the process handle on Windows.
+        if proc is not None:
+            try:
+                if proc.poll() is None:
+                    proc.kill()
+                    proc.wait(timeout=10)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                try:
+                    proc.wait(timeout=5)
+                except Exception:
+                    pass
         try:
-            err_bytes = proc.stderr.read() if proc.stderr else b""
+            stderr_store.seek(0)
+            err_bytes = stderr_store.read()
         except Exception:
             err_bytes = b""
+        finally:
+            stderr_store.close()
 
     if rc != 0:
         err_text = (err_bytes.decode("utf-8", errors="replace")

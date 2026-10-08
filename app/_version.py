@@ -13,4 +13,4 @@ Bumping process (on release):
     4. git commit + git tag v1.0.8 + git push origin main --tags
 """
 
-__version__ = "1.0.9"
+__version__ = "1.1.0"

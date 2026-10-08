@@ -46,7 +46,8 @@ from typing import List, Optional, Sequence
 
 import cv2
 import numpy as np
-from PyQt5.QtCore import QEventLoop, QObject, QThread, Qt, pyqtSignal
+from PyQt5.QtCore import (QEventLoop, QObject, QThread, Qt, pyqtSignal,
+                          pyqtSlot)
 
 from fdcore.video_io import is_image_file
 from fdcore.transcode import is_noop as _final_is_noop
@@ -78,6 +79,29 @@ STAGE_TRANSCODE = "transcode"
 # close, but a misconfigured / dirty target dir could otherwise spin the
 # loop forever. Hitting this raises a clear Korean error instead.
 _MAX_COLLISION_SUFFIX = 9999
+
+
+class _WorkerResultRelay(QObject):
+    """Receive terminal worker signals in the local event-loop thread."""
+
+    def __init__(self, loop: QEventLoop, result: dict):
+        super().__init__()
+        self._loop = loop
+        self._result = result
+
+    @pyqtSlot(str)
+    def on_finished(self, _path: str) -> None:
+        self._loop.quit()
+
+    @pyqtSlot(str)
+    def on_error(self, message: str) -> None:
+        self._result["error"] = message
+        self._loop.quit()
+
+    @pyqtSlot()
+    def on_cancelled(self) -> None:
+        self._result["cancelled"] = True
+        self._loop.quit()
 
 
 def resolve_output_dir(today: Optional[date] = None,
@@ -640,6 +664,7 @@ class BatchOrchestrator(QThread):
 
         loop = QEventLoop()
         self._cur_loop = loop
+        relay = _WorkerResultRelay(loop, self._cur_result)
 
         # Bound methods keep the receiver alive via __self__ -> self,
         # which is the orchestrator (still referenced by the caller).
@@ -651,11 +676,19 @@ class BatchOrchestrator(QThread):
         if hasattr(worker, "chunk_progress"):
             worker.chunk_progress.connect(
                 self._slot_on_chunk_progress, Qt.QueuedConnection)
+        # The relay is created here, inside the orchestrator's run thread, so
+        # terminal events queue onto the SAME local event loop we are about to
+        # enter. If a fast transcode emits before loop.exec_(), the event stays
+        # queued and is handled as soon as the loop starts.
         worker.finished_signal.connect(
-            self._slot_on_finished, Qt.QueuedConnection)
-        worker.error_signal.connect(self._slot_on_error, Qt.QueuedConnection)
+            relay.on_finished, Qt.QueuedConnection)
+        worker.error_signal.connect(relay.on_error, Qt.QueuedConnection)
         worker.cancelled_signal.connect(
-            self._slot_on_cancelled, Qt.QueuedConnection)
+            relay.on_cancelled, Qt.QueuedConnection)
+        # QThread.finished is queued directly to the local event loop. If the
+        # custom finished signal raced ahead of loop.exec_(), this event stays
+        # queued and reliably releases the loop as soon as it starts.
+        worker.finished.connect(loop.quit, Qt.QueuedConnection)
 
         worker.start()
         loop.exec_()

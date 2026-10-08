@@ -413,8 +413,8 @@ class BatchPage(QWidget):
         self.inp_batch_frames = QSpinBox()
         self.inp_batch_frames.setRange(0, 5000)
         self.inp_batch_frames.setValue(0)
-        self.inp_batch_frames.setToolTip(tr("batch_tooltip_batch_frames"))
-        inp_lay.addRow(QLabel(tr("batch_label_batch_frames") + ":"),
+        self.inp_batch_frames.setToolTip(tr("inpaint_tooltip_batch_frames"))
+        inp_lay.addRow(QLabel(tr("inpaint_label_batch_frames") + ":"),
                        self.inp_batch_frames)
         self.inp_codec = _CodecCard("inpaint")
         inp_lay.addRow(self.inp_codec)

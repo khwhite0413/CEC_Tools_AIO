@@ -254,12 +254,16 @@ class InpaintEngine:
                     gt_flows_f_list.append(flows_f)
                     gt_flows_b_list.append(flows_b)
                     torch.cuda.empty_cache()
+                    if progress_callback:
+                        progress_callback(0, video_length)
                 gt_flows_f = torch.cat(gt_flows_f_list, dim=1)
                 gt_flows_b = torch.cat(gt_flows_b_list, dim=1)
                 gt_flows_bi = (gt_flows_f, gt_flows_b)
             else:
                 gt_flows_bi = self.fix_raft(frames, iters=raft_iter)
                 torch.cuda.empty_cache()
+                if progress_callback:
+                    progress_callback(0, video_length)
 
             # --- Apply fp16 ---
             if use_half:
@@ -290,6 +294,8 @@ class InpaintEngine:
                     pred_flows_f.append(pred_flows_bi_sub[0][:, pad_len_s:e_f - s_f - pad_len_e])
                     pred_flows_b.append(pred_flows_bi_sub[1][:, pad_len_s:e_f - s_f - pad_len_e])
                     torch.cuda.empty_cache()
+                    if progress_callback:
+                        progress_callback(0, video_length)
                 pred_flows_f = torch.cat(pred_flows_f, dim=1)
                 pred_flows_b = torch.cat(pred_flows_b, dim=1)
                 pred_flows_bi = (pred_flows_f, pred_flows_b)
@@ -297,6 +303,8 @@ class InpaintEngine:
                 pred_flows_bi, _ = self.fix_flow_complete.forward_bidirect_flow(gt_flows_bi, flow_masks_t)
                 pred_flows_bi = self.fix_flow_complete.combine_flow(gt_flows_bi, pred_flows_bi, flow_masks_t)
                 torch.cuda.empty_cache()
+                if progress_callback:
+                    progress_callback(0, video_length)
 
             # --- 3. Image propagation ---
             masked_frames = frames * (1 - masks_dilated_t)
@@ -322,6 +330,8 @@ class InpaintEngine:
                     updated_frames.append(updated_frames_sub[:, pad_len_s:e_f - s_f - pad_len_e])
                     updated_masks.append(updated_masks_sub[:, pad_len_s:e_f - s_f - pad_len_e])
                     torch.cuda.empty_cache()
+                    if progress_callback:
+                        progress_callback(0, video_length)
                 updated_frames = torch.cat(updated_frames, dim=1)
                 updated_masks = torch.cat(updated_masks, dim=1)
             else:
@@ -331,6 +341,8 @@ class InpaintEngine:
                 updated_frames = frames * (1 - masks_dilated_t) + prop_imgs.view(b, t, 3, h, w) * masks_dilated_t
                 updated_masks = updated_local_masks.view(b, t, 1, h, w)
                 torch.cuda.empty_cache()
+                if progress_callback:
+                    progress_callback(0, video_length)
 
         # --- 4. Feature propagation + Transformer ---
         ori_frames = frames_inp

@@ -387,8 +387,8 @@ _STRINGS = {
     "inpaint_label_subvideo": {"ko": "Subvideo length", "en": "Subvideo length"},
     "inpaint_label_raft_iter": {"ko": "RAFT iterations", "en": "RAFT iterations"},
     "inpaint_label_dilation": {"ko": "Mask dilation", "en": "Mask dilation"},
-    "inpaint_label_batch_frames": {"ko": "Max batch frames (0=전체)",
-                                    "en": "Max batch frames (0=all)"},
+    "inpaint_label_batch_frames": {"ko": "Max batch frames (0=자동)",
+                                    "en": "Max batch frames (0=auto)"},
     "inpaint_placeholder_output": {
         "ko": "비워두면 자동: output/<원본>_inpainted.mp4",
         "en": "Empty → output/<input>_inpainted.mp4"},
@@ -417,11 +417,11 @@ _STRINGS = {
                "<b>ProPainter</b>: optical-flow + transformer based. "
                "Currently the only available option.")},
     "inpaint_tooltip_batch_frames": {
-        "ko": ("한 번에 처리할 최대 프레임 수 (0 = 전체 한번에).<br>"
-               "긴 영상이나 VRAM이 부족할 때 분할 처리하세요. "
+        "ko": ("한 번에 처리할 최대 프레임 수 (0 = 자동 안전 설정).<br>"
+               "긴 영상은 시간 문맥을 겹쳐서 자동 분할 처리합니다. "
                "<b>720p 16GB GPU 기준 ~200, 1080p ~80, 4K ~20</b>."),
-        "en": ("Max frames processed per batch (0 = all at once).<br>"
-               "Split long clips or when VRAM is tight. "
+        "en": ("Max frames processed per window (0 = safe auto).<br>"
+               "Long clips are split automatically with temporal overlap. "
                "<b>~200 for 720p 16GB / ~80 for 1080p / ~20 for 4K</b>.")},
     "inpaint_tooltip_fp16": {
         "ko": ("CUDA에서 FP16(반정밀) 추론 사용.<br>"

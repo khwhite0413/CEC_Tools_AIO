@@ -10,6 +10,7 @@ which the workers still need.
 
 import os
 import subprocess
+import tempfile
 
 import cv2
 import numpy as np
@@ -147,3 +148,96 @@ def read_frames_batch(path, start, count, fps=None):
             except Exception:
                 pass
     return frames
+
+
+class SequentialFrameReader:
+    """Read BGR24 frames from one persistent FFmpeg process.
+
+    Unlike ``read_frames_batch`` this does not seek and restart FFmpeg for
+    every chunk, so runtime and memory stay predictable on very long videos.
+    """
+
+    def __init__(self, path, fps=None):
+        self.path = path
+        self._image_done = False
+        self._proc = None
+        self._stderr = None
+        if is_image_file(path):
+            self._image = cv2.imread(path)
+            self.width = self._image.shape[1] if self._image is not None else 0
+            self.height = self._image.shape[0] if self._image is not None else 0
+            return
+
+        info = VideoInfo(path)
+        self.width, self.height = info.width, info.height
+        target_fps = float(fps) if fps and fps > 0 else float(info.fps or 30.0)
+        self._frame_size = self.width * self.height * 3
+        self._stderr = tempfile.TemporaryFile()
+        cmd = [
+            _get_ffmpeg(), "-loglevel", "error", "-i", path,
+            "-vf", f"fps={target_fps}", "-f", "rawvideo",
+            "-pix_fmt", "bgr24", "-",
+        ]
+        self._proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=self._stderr,
+            bufsize=max(self._frame_size * 4, 4 * 1024 * 1024))
+
+    def read(self):
+        if self._proc is None:
+            if self._image_done:
+                return None
+            self._image_done = True
+            return self._image.copy() if self._image is not None else None
+
+        chunks = []
+        remaining = self._frame_size
+        while remaining:
+            chunk = self._proc.stdout.read(remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        if remaining:
+            return None
+        return np.frombuffer(b"".join(chunks), dtype=np.uint8).reshape(
+            (self.height, self.width, 3)).copy()
+
+    def verify_eof(self):
+        """Raise when FFmpeg ended because of a decode error, not clean EOF."""
+        if self._proc is None:
+            return
+        try:
+            self._proc.stdout.close()
+        except Exception:
+            pass
+        rc = self._proc.wait(timeout=15)
+        if rc != 0:
+            self._stderr.seek(0, os.SEEK_END)
+            size = self._stderr.tell()
+            self._stderr.seek(max(0, size - 2000))
+            detail = self._stderr.read().decode("utf-8", errors="replace")
+            raise RuntimeError(
+                f"영상 디코딩 실패 (ffmpeg exit {rc})\n{detail.strip()}")
+
+    def release(self):
+        if self._proc is not None:
+            try:
+                self._proc.stdout.close()
+            except Exception:
+                pass
+            if self._proc.poll() is None:
+                try:
+                    self._proc.terminate()
+                    self._proc.wait(timeout=5)
+                except Exception:
+                    try:
+                        self._proc.kill()
+                    except Exception:
+                        pass
+            self._proc = None
+        if self._stderr is not None:
+            try:
+                self._stderr.close()
+            except Exception:
+                pass
+            self._stderr = None

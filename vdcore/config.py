@@ -18,7 +18,7 @@ DEFAULT_SETTINGS = {
     "ref_stride": 10,
     "raft_iter": 20,
     "mask_dilation": 4,
-    "max_batch_frames": 0,  # 0=OFF (전체 한번에). 양수일 때만 분할 처리
+    "max_batch_frames": 0,  # 0=자동 안전 청크(80f). 양수=최대 윈도우 크기
 }
 
 VIDEO_EXTENSIONS = "Video Files (*.mp4 *.avi *.mov *.mkv *.wmv *.flv *.webm)"

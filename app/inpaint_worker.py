@@ -24,9 +24,14 @@ from PyQt5.QtCore import QThread, pyqtSignal
 # fidelity FlowDenoise has had since v1.0.0.
 from fdcore.video_io import (VideoInfo, FFmpegWriter, SingleImageWriter,
                              is_image_file, bgr24_to_bgr48le)
-from vdcore.video_io import read_frames_batch
+from vdcore.video_io import SequentialFrameReader
+from vdcore.inpaint_chunking import iter_context_windows, resolve_window_size
 from vdcore.mask_manager import mask_to_binary
 from vdcore.inpaint_engine import InpaintEngine
+
+
+class _InpaintCancelled(Exception):
+    """Internal control-flow signal for prompt cancellation."""
 
 
 def compute_crop_box(mask, padding=50):
@@ -80,6 +85,9 @@ class InpaintWorker(QThread):
         self.requestInterruption()
 
     def run(self):
+        reader = None
+        engine = None
+        writer = None
         try:
             info = VideoInfo(self.video_path)
             # effective_fps: user override (Dev-mode FPS dropdown) when
@@ -120,12 +128,11 @@ class InpaintWorker(QThread):
             x1, y1, x2, y2 = box
             cropped_mask = mask_binary[y1:y2, x1:x2].copy()
 
-            max_batch = int(self.settings.get("max_batch_frames", 0) or 0)
-            if max_batch <= 0 or max_batch >= total_frames:
-                max_batch = total_frames
-                num_batches = 1
-            else:
-                num_batches = (total_frames + max_batch - 1) // max_batch
+            max_batch = resolve_window_size(
+                self.settings.get("max_batch_frames", 0))
+            temporal_overlap = max(
+                int(self.settings.get("neighbor_length", 10) or 10),
+                int(self.settings.get("ref_stride", 10) or 10))
 
             is_img_out = (is_image_file(self.output_path) or
                           self.settings.get("output_format") in ("png", "jpg", "jpeg"))
@@ -147,22 +154,19 @@ class InpaintWorker(QThread):
 
             engine = InpaintEngine(
                 self.device, fp16=bool(self.settings.get("fp16", True)))
+            reader = SequentialFrameReader(
+                self.video_path, fps=effective_fps)
 
             self.phase_changed.emit("processing")
             processed = 0
-            for batch_idx in range(num_batches):
+            frame_limit = self.frame_cap if self.frame_cap > 0 else -1
+            windows = iter_context_windows(
+                reader.read, window_size=max_batch,
+                overlap=temporal_overlap, frame_limit=frame_limit)
+            for frames, keep_start, keep_end in windows:
                 if self._cancelled or self.isInterruptionRequested():
                     break
-
-                batch_start = batch_idx * max_batch
-                batch_end = min(batch_start + max_batch, total_frames)
-                batch_count = batch_end - batch_start
-
-                frames = read_frames_batch(
-                    self.video_path, batch_start, batch_count,
-                    fps=effective_fps)
-                if not frames:
-                    break
+                output_count = keep_end - keep_start
 
                 cropped_frames = [f[y1:y2, x1:x2].copy() for f in frames]
                 crop_h, crop_w = cropped_mask.shape[:2]
@@ -189,48 +193,79 @@ class InpaintWorker(QThread):
 
                 def on_progress(cur, total, _o=offset):
                     if self._cancelled or self.isInterruptionRequested():
-                        return
-                    self.progress.emit(_o + cur, total_frames)
+                        raise _InpaintCancelled()
+                    ratio = min(1.0, max(0.0, cur / max(1, total)))
+                    done = _o + int(round(ratio * output_count))
+                    self.progress.emit(done, max(total_frames, done))
 
-                inpainted = engine.inpaint_frames(
-                    proc_frames, proc_mask, self.settings,
-                    progress_callback=on_progress)
+                try:
+                    inpainted = engine.inpaint_frames(
+                        proc_frames, proc_mask, self.settings,
+                        progress_callback=on_progress)
+                except _InpaintCancelled:
+                    break
+
+                if len(inpainted) != len(frames):
+                    raise RuntimeError(
+                        "인페인트 결과 프레임 수가 입력과 다릅니다: "
+                        f"입력 {len(frames)}, 결과 {len(inpainted)}")
 
                 if proc_w != crop_w or proc_h != crop_h:
                     inpainted = [cv2.resize(r, (crop_w, crop_h),
                                             interpolation=cv2.INTER_CUBIC)
                                  for r in inpainted]
 
-                for i, frame in enumerate(frames):
+                written_this_window = 0
+                for i in range(keep_start, keep_end):
                     if self._cancelled or self.isInterruptionRequested():
                         break
+                    frame = frames[i]
                     result = frame.copy()
-                    if i < len(inpainted):
-                        result[y1:y2, x1:x2] = inpainted[i]
+                    result[y1:y2, x1:x2] = inpainted[i]
                     if is_img_out:
                         writer.write(result)
                     else:
                         writer.write(bgr24_to_bgr48le(result))
+                    written_this_window += 1
 
-                processed += batch_count
-                self.progress.emit(processed, total_frames)
+                processed += written_this_window
+                self.progress.emit(processed, max(total_frames, processed))
 
                 del frames, cropped_frames, proc_frames, inpainted
 
-            engine.release()
-
             if self._cancelled or self.isInterruptionRequested():
+                reader.release()
+                reader = None
+                engine.release()
+                engine = None
                 try:
                     writer.release()
                 except Exception:
                     pass
+                writer = None
                 self.cancelled_signal.emit()
                 return
 
+            if self.frame_cap <= 0:
+                reader.verify_eof()
+            reader.release()
+            reader = None
+            engine.release()
+            engine = None
+
             self.phase_changed.emit("encoding")
             writer.release()
+            writer = None
+            self.progress.emit(processed, processed)
             self.phase_changed.emit("done")
             self.finished_signal.emit(self.output_path)
 
         except Exception as e:
+            for resource in (reader, engine, writer):
+                if resource is None:
+                    continue
+                try:
+                    resource.release()
+                except Exception:
+                    pass
             self.error_signal.emit(f"{e}\n\n{traceback.format_exc()}")

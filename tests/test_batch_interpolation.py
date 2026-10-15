@@ -19,13 +19,19 @@ class BatchInterpolationUiTests(unittest.TestCase):
             raise unittest.SkipTest("Widget tests require QApplication.")
         cls.app = QApplication.instance() or QApplication([])
 
-    def test_stage_defaults_off_with_same_safe_defaults_as_single_tab(self):
+    def test_all_batch_processing_stages_default_off(self):
         from app.batch_page import BatchPage
 
         page = BatchPage()
+        self.assertFalse(page.inp_box.isChecked())
+        self.assertFalse(page.den_box.isChecked())
         self.assertFalse(page.int_box.isChecked())
+        self.assertFalse(page.ups_box.isChecked())
         inpaint, denoise, interpolation, upscale, final = page._gather_settings()
+        self.assertFalse(inpaint["enabled"])
+        self.assertFalse(denoise["enabled"])
         self.assertFalse(interpolation["enabled"])
+        self.assertFalse(upscale["enabled"])
         self.assertEqual(interpolation["model"], "rife_426")
         self.assertEqual(interpolation["multiplier"], 2)
         self.assertIsNone(interpolation["output_fps"])

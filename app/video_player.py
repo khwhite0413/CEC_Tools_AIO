@@ -2,6 +2,7 @@
 
 import os
 import shutil
+import time
 
 import cv2
 import numpy as np
@@ -24,6 +25,24 @@ def _fmt_time(seconds: float) -> str:
     m = int(seconds // 60)
     s = seconds - m * 60
     return f"{m:02d}:{s:05.2f}"
+
+
+def compare_frame_index(after_index: int, after_fps: float,
+                        before_fps: float, sync_by_time: bool) -> int:
+    """Map an after-frame to the before stream while preserving legacy use."""
+    index = max(0, int(after_index))
+    if not sync_by_time or after_fps <= 0 or before_fps <= 0:
+        return index
+    return max(0, int((index / float(after_fps)) * float(before_fps)))
+
+
+def playback_frame_index(start_index: int, elapsed_seconds: float,
+                         fps: float) -> int:
+    """Return the frame due on a wall clock, allowing delayed UI ticks to catch up."""
+    start = max(0, int(start_index))
+    if elapsed_seconds <= 0 or fps <= 0:
+        return start
+    return start + int(float(elapsed_seconds) * float(fps) + 1e-9)
 
 
 class _NullVideoSurface(QAbstractVideoSurface):
@@ -286,6 +305,8 @@ class VideoPlayer(QWidget):
         self._cap = None
         self._idx = 0
         self._playing = False
+        self._play_anchor_time = 0.0
+        self._play_anchor_index = 0
         self._loop = True
         self._click_to_load = click_to_load
         # Optional A/B compare state: a second capture (the "before"
@@ -293,6 +314,10 @@ class VideoPlayer(QWidget):
         # frame_view's wipe position.
         self._before_cap = None
         self._before_path = None
+        self._before_fps = 0.0
+        self._before_sync_by_time = False
+        self._before_frame_cache = None
+        self._before_frame_index = -1
         # Optional alpha-mask overlay (Inpaint tab uses this — pressing
         # A toggles it on/off so the user can verify which pixels the
         # preset / brush will inpaint). _raw_frame caches the most recent
@@ -483,6 +508,8 @@ class VideoPlayer(QWidget):
             return
         if self._idx >= self.video_info.frame_count - 1:
             self.seek_to(0)
+        self._play_anchor_time = time.perf_counter()
+        self._play_anchor_index = self._idx
         self._timer.start()
         self._playing = True
         if self._has_audio:
@@ -528,6 +555,9 @@ class VideoPlayer(QWidget):
         self._internal_seek = False
         if self._has_audio:
             self._sync_audio_position()
+        if self._playing:
+            self._play_anchor_time = time.perf_counter()
+            self._play_anchor_index = self._idx
 
     def seek_first(self):
         self.seek_to(0)
@@ -540,7 +570,8 @@ class VideoPlayer(QWidget):
         self.seek_to(self._idx + delta)
 
     # --- A/B compare ---------------------------------------------------
-    def enable_compare(self, before_path: str) -> bool:
+    def enable_compare(self, before_path: str,
+                       sync_by_time: bool = False) -> bool:
         """Mount `before_path` as the secondary stream for wipe comparison.
         Primary capture (after) keeps showing as default; wipe at 0.0 hides
         the before. Accepts a video file path or an image-sequence dir."""
@@ -557,6 +588,10 @@ class VideoPlayer(QWidget):
             return False
         self._before_cap = cap
         self._before_path = before_path
+        self._before_fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+        self._before_sync_by_time = bool(sync_by_time)
+        self._before_frame_cache = None
+        self._before_frame_index = -1
         self.frame_view.set_wipe_enabled(True)
         self.frame_view.set_wipe_pos(0.0)
         # Re-render current frame with the new compositing path.
@@ -577,6 +612,10 @@ class VideoPlayer(QWidget):
                 pass
         self._before_cap = None
         self._before_path = None
+        self._before_fps = 0.0
+        self._before_sync_by_time = False
+        self._before_frame_cache = None
+        self._before_frame_index = -1
 
     def _on_wipe_changed(self, pos: float):
         # Re-render the current frame with the new wipe position.
@@ -657,17 +696,31 @@ class VideoPlayer(QWidget):
         of the wipe line. Otherwise return the after frame untouched."""
         if self._before_cap is None or after_frame is None:
             return after_frame
-        cur_b = int(self._before_cap.get(cv2.CAP_PROP_POS_FRAMES))
-        if idx != cur_b:
-            self._before_cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-        ret_b, before_frame = self._before_cap.read()
-        if not ret_b or before_frame is None:
+        wipe_pos = self.frame_view.wipe_pos()
+        if wipe_pos <= 0.0:
             return after_frame
+        after_fps = float(getattr(self.video_info, "fps", 0.0) or 0.0)
+        before_idx = compare_frame_index(
+            idx, after_fps, self._before_fps, self._before_sync_by_time)
+        before_total = int(self._before_cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        if before_total > 0:
+            before_idx = min(before_idx, before_total - 1)
+        if (self._before_frame_cache is not None
+                and self._before_frame_index == before_idx):
+            before_frame = self._before_frame_cache
+        else:
+            cur_b = int(self._before_cap.get(cv2.CAP_PROP_POS_FRAMES))
+            if before_idx != cur_b:
+                self._before_cap.set(cv2.CAP_PROP_POS_FRAMES, before_idx)
+            ret_b, before_frame = self._before_cap.read()
+            if not ret_b or before_frame is None:
+                return after_frame
+            self._before_frame_cache = before_frame
+            self._before_frame_index = before_idx
         h_a, w_a = after_frame.shape[:2]
         h_b, w_b = before_frame.shape[:2]
         if (h_b, w_b) != (h_a, w_a):
             before_frame = cv2.resize(before_frame, (w_a, h_a))
-        wipe_pos = self.frame_view.wipe_pos()
         boundary_x = int(wipe_pos * w_a)
         if boundary_x <= 0:
             return after_frame
@@ -796,49 +849,39 @@ class VideoPlayer(QWidget):
     def _on_tick(self):
         if not self.video_info:
             return
-        nxt = self._idx + 1
-        wrapped = False
-        if nxt >= self.video_info.frame_count:
+        fps = self.video_info.fps or 30.0
+        total = self.video_info.frame_count
+        absolute = playback_frame_index(
+            self._play_anchor_index,
+            time.perf_counter() - self._play_anchor_time,
+            fps)
+        if absolute >= total:
             if self._loop:
-                self._cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                self._idx = -1
-                nxt = 0
-                wrapped = True
+                nxt = absolute % total
             else:
+                if self._idx != total - 1:
+                    self._show_frame_at(total - 1)
+                    self._internal_seek = True
+                    self.slider.setValue(total - 1)
+                    self._internal_seek = False
                 self.pause()
                 return
-        ret, frame = self._cap.read()
-        if not ret:
-            if self._loop:
-                self._cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                ret, frame = self._cap.read()
-                if not ret:
-                    self.pause()
-                    return
-                nxt = 0
-                self._idx = -1
-                wrapped = True
-            else:
-                self.pause()
-                return
+        else:
+            nxt = absolute
+        wrapped = nxt < self._idx
+        if nxt == self._idx:
+            return
         if wrapped and self._has_audio and not self.btn_mute.isChecked():
             # Video duration is often a few ms shorter than audio (encoder
             # rounding on the last partial frame). Without this, the cv2
             # tick wraps to frame 0 while audio is still playing the tail
             # of the previous lap — they desync by ~50 ms per loop. Snap
-            # audio to 0 on every wrap to keep them locked.
-            self._audio.setPosition(0)
+            # audio to the same wrapped presentation time. A delayed UI
+            # tick may legitimately land on frame 1+ rather than exactly 0.
+            self._audio.setPosition(int(nxt * 1000.0 / fps))
             if self._audio.state() != QMediaPlayer.PlayingState:
                 self._audio.play()
-        frame = self._composite_with_before(frame, nxt)
-        self._idx = nxt
-        self._raw_frame = frame
-        self.frame_view.show_bgr(self._apply_overlay(frame))
-        fps = self.video_info.fps or 30.0
-        total = self.video_info.frame_count
-        self.time_label.setText(
-            f"{_fmt_time(nxt / fps)} / {_fmt_time(total / fps)}")
-        self.frame_label.setText(f"{nxt + 1} / {total}")
+        self._show_frame_at(nxt)
         self._internal_seek = True
         self.slider.setValue(nxt)
         self.slider.update()
@@ -860,6 +903,8 @@ class VideoPlayer(QWidget):
     def _on_slider_released(self):
         self._scrubbing = False
         if self._playing:
+            self._play_anchor_time = time.perf_counter()
+            self._play_anchor_index = self._idx
             self._timer.start()
         if self._has_audio:
             self._sync_audio_position()

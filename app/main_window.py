@@ -23,10 +23,12 @@ from app._version import __version__
 from app.parameter_panel import ParameterPanel
 from app.preview_dialog import PreviewDialog
 from app.video_player import VideoPlayer
-from app.workers import DenoiseWorker, PreviewWorker, derive_output_path, probe_video
+from app.workers import (DenoiseWorker, PreviewWorker, create_denoise_worker,
+                         derive_output_path, probe_video)
 from app.about_page import AboutPage
 from app.inpaint_page import InpaintPage
 from app.upscale_page import UpscalePage
+from app.interpolation_page import InterpolationPage
 from app.batch_page import BatchPage
 from app.chatbot_panel import ChatbotOverlay
 from app.i18n import tr, get_lang, set_lang, LANGS, LANG_LABELS
@@ -64,6 +66,7 @@ _PREVIEW_CACHE_FILES = (
     # because the user can pick H.264 (.mp4) or ProRes (.mov) per tab.
     "inpaint_view.mp4", "inpaint_view.mov",
     "upscale_view.mp4", "upscale_view.mov",
+    "interpolation_view.mp4", "interpolation_view.mov",
     # Inpaint preview output (first ~80 frames, forced h264 mp4).
     "inpaint_preview.mp4",
 )
@@ -164,14 +167,16 @@ class MainWindow(QMainWindow):
         self.inpaint_page = InpaintPage()
         self.denoise_page = self._build_denoise_page()
         self.upscale_page = UpscalePage()
+        self.interpolation_page = InterpolationPage()
         self.batch_page = BatchPage()
         self.batch_page.log.connect(self._log)
         self.about_page = AboutPage()
         # Tab order: 0 = Inpaint, 1 = Denoise, 2 = Upscale,
-        #            3 = Batch, 4 = About.
+        #            3 = Frame Interpolation, 4 = Batch, 5 = About.
         self.stack.addWidget(self.inpaint_page)
         self.stack.addWidget(self.denoise_page)
         self.stack.addWidget(self.upscale_page)
+        self.stack.addWidget(self.interpolation_page)
         self.stack.addWidget(self.batch_page)
         self.stack.addWidget(self.about_page)
 
@@ -234,22 +239,28 @@ class MainWindow(QMainWindow):
         self.btn_tab_upscale.setCheckable(True)
         self.btn_tab_upscale.setStyleSheet(_TAB_BTN_QSS)
         self.btn_tab_upscale.clicked.connect(lambda: self.stack.setCurrentIndex(2))
+        self.btn_tab_interpolation = QPushButton(tr("tab_interpolation"))
+        self.btn_tab_interpolation.setCheckable(True)
+        self.btn_tab_interpolation.setStyleSheet(_TAB_BTN_QSS)
+        self.btn_tab_interpolation.clicked.connect(lambda: self.stack.setCurrentIndex(3))
         self.btn_tab_batch = QPushButton(tr("tab_batch"))
         self.btn_tab_batch.setCheckable(True)
         self.btn_tab_batch.setStyleSheet(_TAB_BTN_QSS)
-        self.btn_tab_batch.clicked.connect(lambda: self.stack.setCurrentIndex(3))
+        self.btn_tab_batch.clicked.connect(lambda: self.stack.setCurrentIndex(4))
         self.btn_tab_about = QPushButton(tr("tab_about"))
         self.btn_tab_about.setCheckable(True)
         self.btn_tab_about.setStyleSheet(_TAB_BTN_QSS)
-        self.btn_tab_about.clicked.connect(lambda: self.stack.setCurrentIndex(4))
+        self.btn_tab_about.clicked.connect(lambda: self.stack.setCurrentIndex(5))
         self.tab_group.addButton(self.btn_tab_inpaint)
         self.tab_group.addButton(self.btn_tab_denoise)
         self.tab_group.addButton(self.btn_tab_upscale)
+        self.tab_group.addButton(self.btn_tab_interpolation)
         self.tab_group.addButton(self.btn_tab_batch)
         self.tab_group.addButton(self.btn_tab_about)
         h.addWidget(self.btn_tab_inpaint)
         h.addWidget(self.btn_tab_denoise)
         h.addWidget(self.btn_tab_upscale)
+        h.addWidget(self.btn_tab_interpolation)
         h.addWidget(self.btn_tab_batch)
         h.addWidget(self.btn_tab_about)
 
@@ -462,7 +473,7 @@ class MainWindow(QMainWindow):
         # a multi-file selection). The other tabs only need the first
         # video so they break out after one.
         idx = self.stack.currentIndex()
-        if idx == 3:
+        if idx == 4:
             # Forward the raw event to BatchPage so its dir-expansion
             # logic stays in one place.
             self.batch_page.dropEvent(e)
@@ -478,6 +489,8 @@ class MainWindow(QMainWindow):
                 self.inpaint_page._set_video(p)
             elif idx == 2:
                 self.upscale_page._set_video(p)
+            elif idx == 3:
+                self.interpolation_page._set_video(p)
             else:
                 self._set_video(p)
             break
@@ -570,10 +583,15 @@ class MainWindow(QMainWindow):
                                          f"출력 폴더 생성 실패:\n{e}")
                     return
         self._log(f"처리 시작 → {out_path}")
-        self._log(f"  flow_model={settings['flow_model']}, "
-                  f"window_size={settings['window_size']}, "
-                  f"batch_size={settings['batch_size']}, "
-                  f"noise_preview={settings['compute_noise_preview']}")
+        if settings.get("denoise_model") == "fastdvdnet":
+            self._log(
+                f"  model=FastDVDnet, noise_sigma={settings['noise_sigma']}, "
+                f"noise_preview={settings['compute_noise_preview']}")
+        else:
+            self._log(f"  model=Flow Denoise, flow_model={settings['flow_model']}, "
+                      f"window_size={settings['window_size']}, "
+                      f"batch_size={settings['batch_size']}, "
+                      f"noise_preview={settings['compute_noise_preview']}")
 
         noise_path = None
         if settings.get("compute_noise_preview"):
@@ -588,8 +606,9 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
-        self.worker = worker_cls(self.video_path, settings, out_path,
-                                 noise_path=noise_path)
+        self.worker = create_denoise_worker(
+            self.video_path, settings, out_path, noise_path=noise_path,
+            preview=(suffix == "_preview"))
         self.worker.progress.connect(self._on_progress)
         self.worker.chunk_progress.connect(self._on_chunk_progress)
         self.worker.finished_signal.connect(self._on_finished)
@@ -1089,6 +1108,10 @@ class MainWindow(QMainWindow):
             pass
         try:
             self.upscale_page.shutdown()
+        except Exception:
+            pass
+        try:
+            self.interpolation_page.shutdown()
         except Exception:
             pass
         try:

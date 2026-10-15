@@ -27,6 +27,7 @@ from app.mask_editor_dialog import MaskEditorDialog
 from app.preview_dialog import PreviewDialog
 from vdcore.config import get_device, weights_available
 from fdcore.video_io import auto_format_from_codec
+from fdcore.scene_detection import DEFAULT_SCENE_MSE_THRESHOLD
 
 
 # Mirrors fdcore.video_io._STANDARD_FPS so the inpaint tab's FPS
@@ -281,6 +282,13 @@ class InpaintPage(QWidget):
         lbl_model = QLabel(tr("inpaint_label_model"))
         lbl_model.setToolTip(tr("inpaint_tooltip_model"))
         basic.addRow(lbl_model, self.model_combo)
+
+        self.scene_detection_mode = QComboBox()
+        self.scene_detection_mode.addItem(tr("scene_detection_mse"), "mse")
+        self.scene_detection_mode.addItem(
+            tr("scene_detection_adaptive"), "pyscenedetect")
+        self.scene_detection_mode.setToolTip(tr("scene_detection_tooltip"))
+        basic.addRow(tr("scene_detection_label"), self.scene_detection_mode)
 
         self.sb_batch_frames = QSpinBox()
         self.sb_batch_frames.setRange(0, 5000)
@@ -755,6 +763,27 @@ class InpaintPage(QWidget):
     # ------------------------------------------------------------------
     # Run / cancel
     # ------------------------------------------------------------------
+    def _gather_settings(self, output_format=None):
+        return {
+            "fp16": self.chk_fp16.isChecked(),
+            "neighbor_length": self.sb_neighbor.value(),
+            "ref_stride": self.sb_ref_stride.value(),
+            "subvideo_length": self.sb_subvideo.value(),
+            "raft_iter": self.sb_raft.value(),
+            # Dilation is already baked into current_mask.
+            "mask_dilation": 0,
+            "max_batch_frames": self.sb_batch_frames.value(),
+            "scene_detection_mode": (
+                self.scene_detection_mode.currentData() or "mse"),
+            "scene_threshold": DEFAULT_SCENE_MSE_THRESHOLD,
+            "output_format": output_format or self._resolved_format(),
+            "prores_profile": self.prores_profile.currentData() or "4444",
+            "fps_override": (self._get_override_fps()
+                             if (self.dev_mode.isChecked()
+                                 and not self.fps_auto_check.isChecked())
+                             else 0.0),
+        }
+
     def _run(self, preview: bool = False):
         if not self.video_path:
             QMessageBox.information(self, "Inpaint", "비디오를 먼저 선택하세요.")
@@ -796,29 +825,7 @@ class InpaintPage(QWidget):
                     return
             frame_cap = -1
 
-        settings = {
-            "fp16":              self.chk_fp16.isChecked(),
-            "neighbor_length":   self.sb_neighbor.value(),
-            "ref_stride":        self.sb_ref_stride.value(),
-            "subvideo_length":   self.sb_subvideo.value(),
-            "raft_iter":         self.sb_raft.value(),
-            # mask_dilation is intentionally 0 here: the dilation
-            # the user selected via sb_dilation was already baked
-            # into self.current_mask back in _apply_preset. Asking
-            # ProPainter to dilate again would double the effect.
-            "mask_dilation":     0,
-            "max_batch_frames":  self.sb_batch_frames.value(),
-            "output_format":     fmt,
-            "prores_profile":    (self.prores_profile.currentData()
-                                  or "4444"),
-            # fps_override only takes effect when Dev mode is on AND
-            # the Auto checkbox is unchecked. 0 = auto (worker falls
-            # back to info.effective_fps).
-            "fps_override": (self._get_override_fps()
-                             if (self.dev_mode.isChecked()
-                                 and not self.fps_auto_check.isChecked())
-                             else 0.0),
-        }
+        settings = self._gather_settings(fmt)
         device = get_device()
         kind = f"미리보기 (앞 {PREVIEW_FRAMES}프레임)" if preview else "처리 시작"
         self._log(f"{kind} → {out_path}")

@@ -19,8 +19,18 @@ _STRINGS = {
     "tab_inpaint":    {"ko": "인페인트", "en": "Inpaint"},
     "tab_denoise":    {"ko": "디노이즈", "en": "Denoise"},
     "tab_upscale":    {"ko": "업스케일", "en": "Upscale"},
+    "tab_interpolation": {"ko": "프레임 보간", "en": "Frame Interpolation"},
     "tab_batch":      {"ko": "배치", "en": "Batch"},
     "tab_about":      {"ko": "About",   "en": "About"},
+    "scene_detection_label": {"ko": "장면 전환 감지",
+                                "en": "Scene change detection"},
+    "scene_detection_mse": {"ko": "기존 MSE (기본)",
+                              "en": "Legacy MSE (default)"},
+    "scene_detection_adaptive": {"ko": "PySceneDetect Adaptive",
+                                   "en": "PySceneDetect Adaptive"},
+    "scene_detection_tooltip": {
+        "ko": "기존 MSE 또는 주변 프레임 변화량을 참고하는 Adaptive 방식을 선택합니다.",
+        "en": "Choose legacy MSE or Adaptive detection using nearby frame changes."},
 
     # Batch page
     "batch_output_folder":    {"ko": "출력 폴더",
@@ -58,8 +68,26 @@ _STRINGS = {
                                 "en": "1) Inpaint (watermark removal)"},
     "batch_section_denoise":  {"ko": "2) 디노이즈 (시간적 광학흐름)",
                                 "en": "2) Denoise (temporal optical flow)"},
-    "batch_section_upscale":  {"ko": "3) 업스케일",
-                                "en": "3) Upscale"},
+    "batch_section_interpolation": {"ko": "3) 프레임 보간",
+                                      "en": "3) Frame Interpolation"},
+    "batch_section_upscale":  {"ko": "4) 업스케일",
+                                "en": "4) Upscale"},
+    "batch_interp_model":     {"ko": "모델", "en": "Model"},
+    "batch_interp_multiplier": {"ko": "보간 배율", "en": "Multiplier"},
+    "batch_interp_output_fps": {"ko": "보간 출력 FPS", "en": "Interpolation output FPS"},
+    "batch_interp_fps_off":   {"ko": "끄기 (처리된 FPS 그대로)",
+                                  "en": "Off (keep generated FPS)"},
+    "batch_interp_fps_custom": {"ko": "직접 입력", "en": "Custom"},
+    "batch_interp_fp16":      {"ko": "FP16 사용 (NVIDIA GPU 권장)",
+                                  "en": "Use FP16 (recommended for NVIDIA GPU)"},
+    "batch_interp_scene_guard": {"ko": "장면 전환 자동 보호",
+                                    "en": "Protect scene changes"},
+    "batch_interp_model_missing": {
+        "ko": "선택한 프레임 보간 모델이 없습니다. setup.bat을 다시 실행하세요.",
+        "en": "The selected interpolation model is missing. Run setup.bat again."},
+    "batch_interp_video_only": {
+        "ko": "프레임 보간은 동영상에만 사용할 수 있습니다. 큐에서 이미지 {n}개를 제거해 주세요.",
+        "en": "Frame interpolation supports video only. Remove {n} image(s) from the queue."},
     "batch_label_preset":     {"ko": "프리셋", "en": "Preset"},
     "batch_label_mask_dilation": {"ko": "마스크 확장 (Dreamina 자동)",
                                     "en": "Mask expansion (Dreamina auto)"},
@@ -117,6 +145,8 @@ _STRINGS = {
                                 "en": "[{stage}] {fname} ({idx}/{total})"},
     "batch_stage_inpaint":    {"ko": "인페인트", "en": "Inpaint"},
     "batch_stage_denoise":    {"ko": "디노이즈", "en": "Denoise"},
+    "batch_stage_interpolation": {"ko": "프레임 보간",
+                                    "en": "Frame Interpolation"},
     "batch_stage_upscale":    {"ko": "업스케일", "en": "Upscale"},
     "batch_status_done":      {"ko": "완료 — {n}개 파일 → {out}",
                                 "en": "Done — {n} file(s) → {out}"},
@@ -501,6 +531,21 @@ _STRINGS = {
     "btn_open_log":  {"ko": "로그 파일 열기", "en": "Open log file"},
 
     # Right column
+    "denoise_section_model": {"ko": "디노이즈 모델", "en": "Denoise model"},
+    "denoise_label_model": {"ko": "모델", "en": "Model"},
+    "denoise_fastdvdnet_tooltip": {
+        "ko": "5프레임 기반 빠른 시간축 디노이즈. 해상도는 유지됩니다.",
+        "en": "Fast five-frame temporal denoise. Resolution is preserved."},
+    "denoise_flow_tooltip": {
+        "ko": "기존 MEMFOF/RAFT 기반 광학 흐름 디노이즈.",
+        "en": "Existing MEMFOF/RAFT optical-flow denoise."},
+    "denoise_label_sigma": {"ko": "노이즈 강도", "en": "Noise sigma"},
+    "denoise_tooltip_sigma": {
+        "ko": ("FastDVDnet이 가정할 노이즈 표준편차 (공식 학습 범위 5~55). "
+               "높을수록 강하게 제거하지만 디테일이 뭉개질 수 있습니다."),
+        "en": ("Noise standard deviation assumed by FastDVDnet (official "
+               "training range 5-55). Higher removes more noise but can "
+               "smooth detail.")},
     "section_temporal":      {"ko": "Temporal Flow Average",
                               "en": "Temporal Flow Average"},
     "section_noise_preview": {"ko": "노이즈 미리보기 (선택)",

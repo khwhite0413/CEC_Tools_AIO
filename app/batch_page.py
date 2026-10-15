@@ -1,4 +1,4 @@
-"""Batch tab — Adobe Media Encoder-style queue + 3-stage pipeline.
+"""Batch tab — Adobe Media Encoder-style queue + 4-stage pipeline.
 
 Left pane is the video viewer (currently-selected clip in the queue).
 Right pane stacks the queue, per-stage settings cards, and the run
@@ -26,6 +26,8 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
 
 from app.mask_editor_dialog import MaskEditorDialog
 from app.aspect_ratio_option import AspectRatioMode
+from app.denoise_models import DENOISE_MODELS, DEFAULT_DENOISE_MODEL
+from app.interpolation_models import INTERPOLATION_MODELS, model_available
 
 
 # Spinner used in queue-row "running" state. Braille block animation
@@ -44,6 +46,11 @@ _STANDARD_FPS_OPTIONS = (
     (50.0, "50"),
     (59.94, "59.94"),
     (60.0, "60"),
+)
+
+_INTERPOLATION_FPS_PRESETS = (
+    23.976, 24.0, 25.0, 29.97, 30.0, 48.0,
+    50.0, 59.94, 60.0, 100.0, 119.88, 120.0,
 )
 
 # Queue-row foreground colours. Picked to match the bottom progress bar
@@ -65,8 +72,9 @@ _BATCH_CHUNK_BAR_THRESHOLD = 250
 from app.i18n import tr
 from app.video_player import VideoPlayer
 from app.batch_orchestrator import (BatchOrchestrator, STAGE_INPAINT,
-                                     STAGE_DENOISE, STAGE_UPSCALE,
-                                     STAGE_TRANSCODE,
+                                     STAGE_DENOISE, STAGE_INTERPOLATION,
+                                     STAGE_UPSCALE, STAGE_TRANSCODE,
+                                     needs_terminal_transcode,
                                      _compute_dreamina_mask)
 
 
@@ -416,6 +424,13 @@ class BatchPage(QWidget):
         self.inp_batch_frames.setToolTip(tr("inpaint_tooltip_batch_frames"))
         inp_lay.addRow(QLabel(tr("inpaint_label_batch_frames") + ":"),
                        self.inp_batch_frames)
+        self.inp_scene_detection_mode = QComboBox()
+        self.inp_scene_detection_mode.addItem(tr("scene_detection_mse"), "mse")
+        self.inp_scene_detection_mode.addItem(
+            tr("scene_detection_adaptive"), "pyscenedetect")
+        self.inp_scene_detection_mode.setToolTip(tr("scene_detection_tooltip"))
+        inp_lay.addRow(QLabel(tr("scene_detection_label") + ":"),
+                       self.inp_scene_detection_mode)
         self.inp_codec = _CodecCard("inpaint")
         inp_lay.addRow(self.inp_codec)
         lay.addWidget(self.inp_box)
@@ -426,25 +441,136 @@ class BatchPage(QWidget):
         self.den_box.setChecked(True)
         den_lay = QFormLayout(self.den_box)
         den_lay.setSpacing(6)
+
+        self.den_model = QComboBox()
+        for key, info in DENOISE_MODELS.items():
+            self.den_model.addItem(info["label"], key)
+            idx = self.den_model.count() - 1
+            self.den_model.setItemData(
+                idx, tr(info["description_key"]), Qt.ToolTipRole)
+        self.den_model.setCurrentIndex(
+            list(DENOISE_MODELS).index(DEFAULT_DENOISE_MODEL))
+        den_lay.addRow(QLabel(tr("denoise_label_model") + ":"),
+                       self.den_model)
+
+        self.den_fast_params = QWidget()
+        den_fast_form = QFormLayout(self.den_fast_params)
+        den_fast_form.setContentsMargins(0, 0, 0, 0)
+        self.den_sigma = QSpinBox()
+        self.den_sigma.setRange(5, 55)
+        self.den_sigma.setValue(25)
+        self.den_sigma.setToolTip(tr("denoise_tooltip_sigma"))
+        den_fast_form.addRow(QLabel(tr("denoise_label_sigma") + ":"),
+                             self.den_sigma)
+        den_lay.addRow(self.den_fast_params)
+
+        self.den_flow_params = QWidget()
+        den_flow_form = QFormLayout(self.den_flow_params)
+        den_flow_form.setContentsMargins(0, 0, 0, 0)
         self.den_window = QSpinBox()
         self.den_window.setRange(2, 9)
         self.den_window.setValue(3)
-        den_lay.addRow(QLabel(tr("batch_label_window") + ":"), self.den_window)
+        den_flow_form.addRow(QLabel(tr("batch_label_window") + ":"),
+                             self.den_window)
         self.den_batch = QSpinBox()
         self.den_batch.setRange(1, 32)
         self.den_batch.setValue(24)
         self.den_batch.setToolTip(tr("batch_tooltip_batch_size"))
-        den_lay.addRow(QLabel(tr("batch_label_batch_size") + ":"),
-                       self.den_batch)
+        den_flow_form.addRow(QLabel(tr("batch_label_batch_size") + ":"),
+                             self.den_batch)
+        self.den_scene_detection_mode = QComboBox()
+        self.den_scene_detection_mode.addItem(tr("scene_detection_mse"), "mse")
+        self.den_scene_detection_mode.addItem(
+            tr("scene_detection_adaptive"), "pyscenedetect")
+        self.den_scene_detection_mode.setToolTip(tr("scene_detection_tooltip"))
+        den_flow_form.addRow(QLabel(tr("scene_detection_label") + ":"),
+                             self.den_scene_detection_mode)
+        den_lay.addRow(self.den_flow_params)
         self.den_codec = _CodecCard("denoise")
         den_lay.addRow(self.den_codec)
+        self.den_model.currentIndexChanged.connect(
+            self._on_den_model_changed)
+        self._on_den_model_changed(self.den_model.currentIndex())
         lay.addWidget(self.den_box)
 
-        # ----- Stage 3: Upscale -----
+        # ----- Stage 3: Frame interpolation -----
+        self.int_box = QGroupBox(tr("batch_section_interpolation"))
+        self.int_box.setCheckable(True)
+        # Keep existing batch behaviour and run time unchanged until the
+        # user explicitly opts into the potentially expensive VFI stage.
+        self.int_box.setChecked(False)
+        int_lay = QFormLayout(self.int_box)
+        int_lay.setSpacing(6)
+
+        self.int_model = QComboBox()
+        for key, info in INTERPOLATION_MODELS.items():
+            self.int_model.addItem(info["name"], key)
+            idx = self.int_model.count() - 1
+            self.int_model.setItemData(
+                idx, f"{info['description']} · {info['license']}",
+                Qt.ToolTipRole)
+        int_lay.addRow(QLabel(tr("batch_interp_model") + ":"),
+                       self.int_model)
+
+        self.int_multiplier = QComboBox()
+        for value in (2, 4, 8):
+            self.int_multiplier.addItem(f"{value}x", value)
+        int_lay.addRow(QLabel(tr("batch_interp_multiplier") + ":"),
+                       self.int_multiplier)
+
+        self.int_output_fps = QComboBox()
+        self.int_output_fps.addItem(tr("batch_interp_fps_off"), None)
+        for fps in _INTERPOLATION_FPS_PRESETS:
+            label = f"{fps:g}" if fps == int(fps) else f"{fps:.3f}"
+            self.int_output_fps.addItem(label, fps)
+        self.int_output_fps.addItem(tr("batch_interp_fps_custom"), -1.0)
+        int_lay.addRow(QLabel(tr("batch_interp_output_fps") + ":"),
+                       self.int_output_fps)
+
+        self.int_custom_fps = QDoubleSpinBox()
+        self.int_custom_fps.setRange(1.0, 240.0)
+        self.int_custom_fps.setDecimals(3)
+        self.int_custom_fps.setValue(60.0)
+        self.int_custom_fps.setVisible(False)
+        self.int_output_fps.currentIndexChanged.connect(
+            lambda _idx: self.int_custom_fps.setVisible(
+                self.int_output_fps.currentData() == -1.0))
+        int_lay.addRow(QLabel(tr("batch_interp_fps_custom") + ":"),
+                       self.int_custom_fps)
+
+        self.int_fp16 = QCheckBox(tr("batch_interp_fp16"))
+        self.int_fp16.setChecked(True)
+        int_lay.addRow(self.int_fp16)
+        self.int_scene_cut = QCheckBox(tr("batch_interp_scene_guard"))
+        self.int_scene_cut.setChecked(True)
+        int_lay.addRow(self.int_scene_cut)
+        self.int_scene_detection_mode = QComboBox()
+        self.int_scene_detection_mode.addItem(
+            tr("scene_detection_mse"), "mse")
+        self.int_scene_detection_mode.addItem(
+            tr("scene_detection_adaptive"), "pyscenedetect")
+        self.int_scene_detection_mode.setToolTip(
+            tr("scene_detection_tooltip"))
+        self.int_scene_cut.toggled.connect(
+            self.int_scene_detection_mode.setEnabled)
+        int_lay.addRow(QLabel(tr("scene_detection_label") + ":"),
+                       self.int_scene_detection_mode)
+
+        self.int_codec = _CodecCard("interpolation")
+        # Interpolation is video-only; image-sequence cache formats are
+        # intentionally unavailable for this stage.
+        for codec in ("jpg", "png"):
+            idx = self.int_codec.codec_combo.findData(codec)
+            if idx >= 0:
+                self.int_codec.codec_combo.removeItem(idx)
+        int_lay.addRow(self.int_codec)
+        lay.addWidget(self.int_box)
+
+        # ----- Stage 4: Upscale -----
         # Only upscale-specific knobs live here now (model + batch size +
         # cache codec). Target resolution / aspect / fps / final codec
         # all moved to the always-active Final Output group below so a
-        # pass-through pipeline (all 3 stages off) can still normalize
+        # pass-through pipeline (all 4 stages off) can still normalize
         # container format.
         self.ups_box = QGroupBox(tr("batch_section_upscale"))
         self.ups_box.setCheckable(True)
@@ -795,6 +921,7 @@ class BatchPage(QWidget):
     _STAGE_LABEL_KEY = {
         STAGE_INPAINT: "batch_stage_inpaint",
         STAGE_DENOISE: "batch_stage_denoise",
+        STAGE_INTERPOLATION: "batch_stage_interpolation",
         STAGE_UPSCALE: "batch_stage_upscale",
         STAGE_TRANSCODE: "batch_stage_transcode",
     }
@@ -1002,6 +1129,12 @@ class BatchPage(QWidget):
                 idx, tr(var_info["tooltip_key"]), Qt.ToolTipRole)
         self.ups_model.blockSignals(False)
 
+    def _on_den_model_changed(self, _idx: int):
+        is_fast = ((self.den_model.currentData()
+                    or DEFAULT_DENOISE_MODEL) == "fastdvdnet")
+        self.den_fast_params.setVisible(is_fast)
+        self.den_flow_params.setVisible(not is_fast)
+
     def _gather_settings(self):
         """Split the batch UI into (per-stage settings, final-output settings).
 
@@ -1023,19 +1156,47 @@ class BatchPage(QWidget):
             "mask_dilation": 0,
             "dreamina_dilation_px": int(self.inp_mask_dilation.value()),
             "max_batch_frames": int(self.inp_batch_frames.value()),
+            "scene_detection_mode": (
+                self.inp_scene_detection_mode.currentData() or "mse"),
+            "scene_threshold": 0.030,
         }
         denoise = {
             "enabled": self.den_box.isChecked(),
+            "denoise_model": (self.den_model.currentData()
+                              or DEFAULT_DENOISE_MODEL),
+            "noise_sigma": int(self.den_sigma.value()),
             "flow_model": "memfof",
             "window_size": int(self.den_window.value()),
             "batch_size": int(self.den_batch.value()),
             "occlusion_threshold": 0.02,
-            "cut_threshold": 0.05,
+            "scene_detection_mode": (
+                self.den_scene_detection_mode.currentData() or "mse"),
+            "scene_threshold": 0.030,
             "flow_scale": 0.5,
             "fp16": True,
             "compute_noise_preview": False,
             "output_format": self.den_codec.codec(),
             "prores_profile": self.den_codec.prores_profile(),
+        }
+        fps_value = self.int_output_fps.currentData()
+        if fps_value is None:
+            interpolation_fps = None
+        elif float(fps_value) < 0:
+            interpolation_fps = float(self.int_custom_fps.value())
+        else:
+            interpolation_fps = float(fps_value)
+        interpolation = {
+            "enabled": self.int_box.isChecked(),
+            "model": self.int_model.currentData() or "rife_426",
+            "multiplier": int(self.int_multiplier.currentData() or 2),
+            "output_fps": interpolation_fps,
+            "fp16": self.int_fp16.isChecked(),
+            "scene_detection_mode": (
+                self.int_scene_detection_mode.currentData() or "mse"),
+            "scene_cut_threshold": (
+                0.030 if self.int_scene_cut.isChecked() else 0.0),
+            "output_format": self.int_codec.codec(),
+            "prores_profile": self.int_codec.prores_profile(),
         }
         upscale = {
             "enabled": self.ups_box.isChecked(),
@@ -1059,7 +1220,7 @@ class BatchPage(QWidget):
             "output_format": self.fin_codec.codec(),
             "prores_profile": self.fin_codec.prores_profile(),
         }
-        return inpaint, denoise, upscale, final
+        return inpaint, denoise, interpolation, upscale, final
 
     def _get_fin_override_fps(self) -> float:
         if self.fin_fps_auto.isChecked():
@@ -1073,9 +1234,9 @@ class BatchPage(QWidget):
         if not self._files:
             QMessageBox.information(self, "Batch", tr("batch_no_files"))
             return
-        inpaint, denoise, upscale, final = self._gather_settings()
+        inpaint, denoise, interpolation, upscale, final = self._gather_settings()
         any_stage_on = (inpaint["enabled"] or denoise["enabled"]
-                        or upscale["enabled"])
+                        or interpolation["enabled"] or upscale["enabled"])
         if not any_stage_on:
             # All stages off — the Final Output group alone must produce
             # a genuine change, otherwise there's nothing to do. Use the
@@ -1090,6 +1251,19 @@ class BatchPage(QWidget):
                 # If the probe crashes, err on the side of trying — the
                 # transcode itself will surface the real problem.
                 pass
+
+        if interpolation["enabled"]:
+            model_key = interpolation["model"]
+            if not model_available(model_key):
+                QMessageBox.warning(
+                    self, "Batch", tr("batch_interp_model_missing"))
+                return
+            image_count = sum(1 for path in self._files if _is_image(path))
+            if image_count:
+                QMessageBox.warning(
+                    self, "Batch",
+                    tr("batch_interp_video_only").format(n=image_count))
+                return
 
         custom_dir = self.out_dir_edit.text().strip() or None
         if custom_dir:
@@ -1109,13 +1283,16 @@ class BatchPage(QWidget):
             self._active_stages.append(STAGE_INPAINT)
         if denoise["enabled"]:
             self._active_stages.append(STAGE_DENOISE)
+        if interpolation["enabled"]:
+            self._active_stages.append(STAGE_INTERPOLATION)
         if upscale["enabled"]:
             self._active_stages.append(STAGE_UPSCALE)
         # Orchestrator decides whether to append a transcode step and
         # tells us via a signal after start(); for now provisionally add
         # it if upscale isn't the last active stage. See _on_progress
         # for the stage-rank math.
-        needs_transcode = (not upscale["enabled"]) and self._is_final_nontrivial(final)
+        needs_transcode = needs_terminal_transcode(
+            self._files, interpolation, upscale, final)
         if needs_transcode:
             self._active_stages.append(STAGE_TRANSCODE)
 
@@ -1123,6 +1300,7 @@ class BatchPage(QWidget):
             self._files, inpaint, denoise, upscale, final,
             output_dir_base=custom_dir,
             custom_masks=self._masks,
+            interpolation_settings=interpolation,
             parent=self)
         self._orchestrator.overall_progress.connect(self._on_progress)
         self._orchestrator.chunk_progress.connect(self._on_chunk_progress)
@@ -1143,11 +1321,8 @@ class BatchPage(QWidget):
         self._reset_queue_colors()
         # Pick the first ENABLED stage's label so the status line doesn't
         # mislead the user when they've disabled inpaint.
-        first_label = tr({
-            True: "batch_stage_inpaint",
-        }.get(inpaint["enabled"], "")) if inpaint["enabled"] else (
-            tr("batch_stage_denoise") if denoise["enabled"]
-            else tr("batch_stage_upscale"))
+        first_stage = self._active_stages[0] if self._active_stages else ""
+        first_label = tr(self._STAGE_LABEL_KEY.get(first_stage, ""))
         self.status_label.setText(
             tr("batch_status_stage").format(
                 stage=first_label,
@@ -1182,6 +1357,7 @@ class BatchPage(QWidget):
         self.queue_list.setAcceptDrops(not running)
         self.inp_box.setEnabled(not running)
         self.den_box.setEnabled(not running)
+        self.int_box.setEnabled(not running)
         self.ups_box.setEnabled(not running)
         self.fin_box.setEnabled(not running)
         self.out_dir_edit.setEnabled(not running)

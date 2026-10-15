@@ -17,16 +17,13 @@ from .flow_warp import (warp_with_flow, color_similarity_mask,
                         forward_backward_occlusion_mask)
 from .flow_models import get_memfof, get_raft
 from .progress import ProgressReporter, CancelledError
+from .scene_detection import detect_scene_boundaries
 
 
-def _detect_scene_changes(frames: torch.Tensor, threshold: float):
-    B = frames.shape[0]
-    boundaries = set()
-    for i in range(1, B):
-        mse = torch.mean((frames[i] - frames[i - 1]) ** 2).item()
-        if mse > threshold:
-            boundaries.add(i)
-    return boundaries
+def _detect_scene_changes(frames: torch.Tensor, threshold: float,
+                          mode: str = "mse"):
+    return detect_scene_boundaries(
+        frames, mode=mode, mse_threshold=threshold, mse_size=None)
 
 
 def _same_scene(i: int, j: int, boundaries: set) -> bool:
@@ -244,7 +241,9 @@ def temporal_flow_average(images: torch.Tensor, settings: dict,
 
     frames = images.permute(0, 3, 1, 2).contiguous()  # BHWC -> BCHW
 
-    boundaries = _detect_scene_changes(frames, settings["scene_threshold"])
+    boundaries = _detect_scene_changes(
+        frames, settings["scene_threshold"],
+        settings.get("scene_detection_mode", "mse"))
     if boundaries:
         print(f"[FlowDenoise] Scene cuts at: {sorted(boundaries)}")
 

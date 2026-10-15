@@ -14,6 +14,7 @@ from PyQt5.QtCore import QThread, pyqtSignal
 
 from fdcore import pipeline, video_io
 from fdcore.progress import ProgressReporter, CancelledError
+from app.denoise_models import normalize_denoise_model
 
 
 PREVIEW_FRAMES = 80
@@ -86,6 +87,20 @@ class PreviewWorker(_Worker):
         super().__init__(video_path, settings, output_path,
                          frame_cap=PREVIEW_FRAMES, noise_path=noise_path,
                          parent=parent)
+
+
+def create_denoise_worker(video_path: str, settings: dict, output_path: str,
+                           noise_path: str = None, preview: bool = False):
+    """Create a model-specific worker without changing legacy Flow logic."""
+    model_key = normalize_denoise_model(settings.get("denoise_model"))
+    if model_key == "fastdvdnet":
+        from app.fastdvdnet_worker import (
+            FastDVDnetPreviewWorker, FastDVDnetWorker)
+        worker_cls = FastDVDnetPreviewWorker if preview else FastDVDnetWorker
+    else:
+        worker_cls = PreviewWorker if preview else DenoiseWorker
+    return worker_cls(video_path, settings, output_path,
+                      noise_path=noise_path)
 
 
 def derive_output_path(input_path: str, suffix: str = "_denoised") -> str:

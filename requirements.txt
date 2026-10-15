@@ -11,5 +11,7 @@ tqdm
 scikit-image
 matplotlib
 huggingface_hub
+gdown
 imageio-ffmpeg
 spandrel
+scenedetect==0.7.2

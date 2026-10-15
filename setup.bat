@@ -18,9 +18,9 @@ set "PATH=%PYTHON_DIR%;%PYTHON_DIR%\Scripts;%PATH%"
 
 REM === Step 1: Python embeddable ===
 if exist "%PYTHON%" (
-    echo [1/10] Python embedded - already installed
+    echo [1/12] Python embedded - already installed
 ) else (
-    echo [1/10] Downloading Python 3.12 embedded...
+    echo [1/12] Downloading Python 3.12 embedded...
     mkdir "%PYTHON_DIR%" 2>nul
     curl -sL -o "%ROOT%python-embed.zip" "https://www.python.org/ftp/python/3.12.8/python-3.12.8-embed-amd64.zip"
     if errorlevel 1 (
@@ -52,7 +52,7 @@ REM "CUDA UMD Version"). Also auto-heals a wrong-wheel install by
 REM uninstalling + reinstalling the correct one when the installed
 REM torch's arch list doesn't cover the GPU (fixes RTX 50 + cu121
 REM pinning that shipped "no kernel image" errors at first launch).
-echo [2/10] Environment check + PyTorch install...
+echo [2/12] Environment check + PyTorch install...
 "%PYTHON%" "%ROOT%app\setup_check.py"
 if errorlevel 1 (
     echo.
@@ -68,7 +68,7 @@ if errorlevel 1 (
 
 :step3
 REM === Step 3: Python dependencies ===
-echo [3/10] Installing dependencies...
+echo [3/12] Installing dependencies...
 "%PYTHON%" -m pip install --no-warn-script-location -q -r "%ROOT%requirements.txt"
 if errorlevel 1 (
     echo    ERROR: pip install failed
@@ -77,7 +77,7 @@ if errorlevel 1 (
 echo    Done
 
 REM === Step 4: MEMFOF (vendored or git) ===
-echo [4/10] Installing MEMFOF...
+echo [4/12] Installing MEMFOF...
 "%PYTHON%" -c "import memfof" >nul 2>&1
 if not errorlevel 1 (
     echo    MEMFOF already installed
@@ -105,7 +105,7 @@ if errorlevel 1 (
 
 :step5
 REM === Step 5: Pre-fetch MEMFOF weights ===
-echo [5/10] Fetching MEMFOF weights ^(first run only^)...
+echo [5/12] Fetching MEMFOF weights ^(first run only^)...
 set "HF_HOME=%ROOT%weights\memfof"
 "%PYTHON%" -c "import os; os.environ['HF_HOME']=r'%ROOT%weights\memfof'; from memfof import MEMFOF; m=MEMFOF.from_pretrained('egorchistov/optical-flow-MEMFOF-Tartan-T-TSKH'); print('    weights OK')"
 if errorlevel 1 (
@@ -113,7 +113,7 @@ if errorlevel 1 (
 )
 
 REM === Step 6: ProPainter source (vendored) ===
-echo [6/10] Verifying ProPainter source...
+echo [6/12] Verifying ProPainter source...
 if exist "%ROOT%third_party\ProPainter\model\propainter.py" (
     echo    ProPainter source OK
     goto :step7
@@ -150,21 +150,39 @@ echo    ProPainter source OK
 
 :step7
 REM === Step 7: ProPainter weights ===
-echo [7/10] Fetching ProPainter weights ^(~580MB, first run only^)...
+echo [7/12] Fetching ProPainter weights ^(~580MB, first run only^)...
 "%PYTHON%" -c "from vdcore.model_downloader import download_all_weights; download_all_weights(progress_callback=print)"
 if errorlevel 1 (
     echo    WARNING: ProPainter weights download failed - retry from the Inpaint tab
 )
 
 REM === Step 8: Upscale model weights (all families) ===
-echo [8/10] Fetching upscale weights ^(~250MB total across all families, first run only^)...
+echo [8/12] Fetching upscale weights ^(~250MB total across all families, first run only^)...
 "%PYTHON%" -c "from app.upscale_worker import download_missing_weights; download_missing_weights()"
 if errorlevel 1 (
     echo    WARNING: some upscale weights failed - retry from the Upscale tab or re-run setup
 )
 
-REM === Step 9: Pretendard fonts (bundled at runtime, OFL) ===
-echo [9/10] Fetching Pretendard fonts...
+REM === Step 9: FastDVDnet official inference weights ===
+echo [9/12] Fetching FastDVDnet weights ^(~10MB, first run only^)...
+"%PYTHON%" -c "from fdcore.fastdvdnet_weights import download_fastdvdnet_weights; download_fastdvdnet_weights()"
+if errorlevel 1 (
+    echo    ERROR: FastDVDnet weights download or checksum verification failed
+    goto :fail
+)
+echo    FastDVDnet weights OK
+
+REM === Step 10: Frame interpolation sources + weights ===
+echo [10/12] Fetching frame interpolation models ^(first run only^)...
+"%PYTHON%" -m app.interpolation_setup
+if errorlevel 1 (
+    echo    ERROR: frame interpolation setup failed
+    goto :fail
+)
+echo    Frame interpolation models OK
+
+REM === Step 11: Pretendard fonts (bundled at runtime, OFL) ===
+echo [11/12] Fetching Pretendard fonts...
 set "FONT_DIR=%ROOT%assets\fonts"
 mkdir "%FONT_DIR%" 2>nul
 set "FONT_BASE=https://cdn.jsdelivr.net/gh/orioncactus/pretendard@latest/packages/pretendard/dist/public/static"
@@ -184,14 +202,14 @@ if exist "%FONT_DIR%\Pretendard-Regular.otf" (
     echo    WARNING: Pretendard download failed - app will use system font
 )
 
-REM === Step 10: ffmpeg + ffprobe (bundled together) ===
+REM === Step 12: ffmpeg + ffprobe (bundled together) ===
 REM imageio_ffmpeg only ships ffmpeg.exe; ffprobe.exe is on no PATH on a
 REM fresh install, so the batch tab's "no audio" probe used to fall back
 REM to the slower ffmpeg-stderr scan that occasionally failed under
 REM non-UTF-8 locales / slow drives. Bundling a full ffmpeg+ffprobe pair
 REM (BtbN GPL build, ~80MB) into ./ffmpeg lets _get_ffmpeg/_get_ffprobe
 REM in fdcore find both binaries side-by-side and the probe never trips.
-echo [10/10] Bundling ffmpeg + ffprobe ^(~80MB, first run only^)...
+echo [12/12] Bundling ffmpeg + ffprobe ^(~80MB, first run only^)...
 set "FFMPEG_DIR=%ROOT%ffmpeg"
 if exist "%FFMPEG_DIR%\ffmpeg.exe" if exist "%FFMPEG_DIR%\ffprobe.exe" (
     echo    ffmpeg + ffprobe already bundled

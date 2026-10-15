@@ -60,3 +60,19 @@ def iter_context_windows(read_frame, window_size=0, overlap=10,
         else:
             left_context = []
         del pending[:core_count]
+
+
+def split_window_on_boundaries(frames, keep_start, keep_end, boundaries):
+    """Split a context window so no ProPainter call crosses a scene cut."""
+    starts = [0] + sorted(
+        int(boundary) for boundary in boundaries
+        if 0 < int(boundary) < len(frames))
+    ends = starts[1:] + [len(frames)]
+    for scene_start, scene_end in zip(starts, ends):
+        output_start = max(int(keep_start), scene_start)
+        output_end = min(int(keep_end), scene_end)
+        if output_start >= output_end:
+            continue
+        yield (frames[scene_start:scene_end],
+               output_start - scene_start,
+               output_end - scene_start)

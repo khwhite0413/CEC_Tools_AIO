@@ -1,10 +1,10 @@
-"""Sequential Inpaint -> Denoise -> Upscale orchestration for the Batch tab.
+"""Sequential Inpaint -> Denoise -> Interpolation -> Upscale orchestration.
 
 Design summary
 --------------
 The orchestrator is itself a QThread. Inside its run() it walks the queued
-files in three stages, batching *by stage* (all files through Inpaint
-first, then all through Denoise, then all through Upscale) so the user
+files in four stages, batching *by stage* (all files through Inpaint,
+Denoise, Interpolation, then Upscale) so the user
 sees clear per-stage progress and intermediate caches can be wiped as
 each stage completes.
 
@@ -21,6 +21,7 @@ Cache layout
 ~~~~~~~~~~~~
 - cache/batch_inpaint/<original_stem>.<ext>
 - cache/batch_denoise/<original_stem>.<ext>
+- cache/batch_interpolation/<original_stem>.<ext>
 - Final folder:
     · default → output/<yymmdd>_result/<original_stem>.<ext>
       (counter `_2`, `_3` … on same-day re-runs)
@@ -30,9 +31,8 @@ Cache layout
   different source directories never overwrite each other's
   intermediates or final output.
 
-The two cache folders are wiped *eagerly* — when Denoise starts, the
-Inpaint cache is dropped; when Upscale starts, the Denoise cache is
-dropped. Final cleanup removes whatever cache survived. This keeps disk
+The cache folders are wiped *eagerly* when the next stage starts. Final
+cleanup removes whatever cache survived. This keeps disk
 usage bounded to roughly one stage worth of intermediates at any time.
 """
 
@@ -54,8 +54,9 @@ from fdcore.transcode import is_noop as _final_is_noop
 from vdcore.config import get_device
 from app.inpaint_worker import InpaintWorker
 from app.upscale_worker import UpscaleWorker
-from app.workers import DenoiseWorker
+from app.workers import create_denoise_worker
 from app.transcode_worker import TranscodeWorker
+from app.interpolation_worker import InterpolationWorker
 
 
 _MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -65,10 +66,12 @@ _CACHE_DIR = os.path.join(_PROJECT_ROOT, "cache")
 _OUTPUT_DIR = os.path.join(_PROJECT_ROOT, "output")
 BATCH_INPAINT_CACHE = os.path.join(_CACHE_DIR, "batch_inpaint")
 BATCH_DENOISE_CACHE = os.path.join(_CACHE_DIR, "batch_denoise")
+BATCH_INTERPOLATION_CACHE = os.path.join(_CACHE_DIR, "batch_interpolation")
 
 
 STAGE_INPAINT = "inpaint"
 STAGE_DENOISE = "denoise"
+STAGE_INTERPOLATION = "interpolation"
 STAGE_UPSCALE = "upscale"
 # Virtual "stage" — only appended when no processing stage will apply
 # the Final Output group's params itself. Concretely: upscale is
@@ -79,6 +82,38 @@ STAGE_TRANSCODE = "transcode"
 # close, but a misconfigured / dirty target dir could otherwise spin the
 # loop forever. Hitting this raises a clear Korean error instead.
 _MAX_COLLISION_SUFFIX = 9999
+
+
+def needs_terminal_transcode(files: Sequence[str], interpolation: dict,
+                             upscale: dict, final: dict) -> bool:
+    """Return whether Final Output needs a separate terminal ffmpeg pass.
+
+    Interpolation changes the timeline and writes its own selected cache
+    codec. Comparing Final Output only with the original source would miss
+    a requested final FPS that happens to equal the source FPS, or a codec
+    change relative to the interpolation output.
+    """
+    if upscale.get("enabled", True) or not files:
+        return False
+    if interpolation.get("enabled", False):
+        aspect_mode = (final.get("aspect_mode") or "none").lower()
+        target_long = int(final.get("target_long_edge", 0) or 0)
+        fps_override = float(final.get("fps_override", 0.0) or 0.0)
+        interpolation_fps = interpolation.get("output_fps")
+        fps_already_matches = (
+            interpolation_fps is not None and fps_override > 0.0
+            and abs(float(interpolation_fps) - fps_override) < 1e-4)
+        final_codec = (final.get("output_format") or "h264").lower()
+        stage_codec = (interpolation.get("output_format") or "h264").lower()
+        profile_differs = (
+            final_codec == "prores" and stage_codec == "prores"
+            and (final.get("prores_profile") or "4444")
+            != (interpolation.get("prores_profile") or "4444"))
+        return (aspect_mode != "none" or target_long > 0
+                or (fps_override > 0.0 and not fps_already_matches)
+                or final_codec != stage_codec
+                or profile_differs)
+    return not _final_is_noop(files[0], final)
 
 
 class _WorkerResultRelay(QObject):
@@ -286,12 +321,14 @@ class BatchOrchestrator(QThread):
                  final_settings: Optional[dict] = None,
                  output_dir_base: Optional[str] = None,
                  custom_masks: Optional[dict] = None,
+                 interpolation_settings: Optional[dict] = None,
                  parent: Optional[QObject] = None):
         super().__init__(parent)
         self._files: List[str] = list(files)
         self._inpaint_settings = dict(inpaint_settings or {})
         self._denoise_settings = dict(denoise_settings or {})
         self._upscale_settings = dict(upscale_settings or {})
+        self._interpolation_settings = dict(interpolation_settings or {})
         # Final Output group — batch-wide codec/fps/aspect/resize.
         # Applied by whichever stage ends up terminal:
         #   - upscale enabled → injected into UpscaleWorker.settings
@@ -359,72 +396,7 @@ class BatchOrchestrator(QThread):
             self.error.emit("큐가 비어있습니다.")
             return
 
-        # Dynamic pipeline: each entry is one canonical stage the user
-        # opted in to. The last entry's outputs go to out_dir; all
-        # earlier entries park their outputs in their own cache dir
-        # (which gets wiped as soon as the following stage finishes).
-        stages: List[dict] = []
-        if self._inpaint_settings.get("enabled", True):
-            stages.append({
-                "name": STAGE_INPAINT,
-                "label": "인페인트",
-                "settings": self._inpaint_settings,
-                "cache_dir": BATCH_INPAINT_CACHE,
-                "build": self._build_inpaint_worker,
-            })
-        if self._denoise_settings.get("enabled", True):
-            stages.append({
-                "name": STAGE_DENOISE,
-                "label": "디노이즈",
-                "settings": self._denoise_settings,
-                "cache_dir": BATCH_DENOISE_CACHE,
-                "build": self._build_denoise_worker,
-            })
-        if self._upscale_settings.get("enabled", True):
-            # Upscale is always terminal when enabled — inject Final
-            # Output params directly into its settings so the worker
-            # applies aspect / resize / fps / codec inline (single encode).
-            merged = dict(self._upscale_settings)
-            fin = self._final_settings
-            merged["aspect_mode"] = fin.get("aspect_mode", "none")
-            merged["target_long_edge"] = int(fin.get("target_long_edge", 0) or 0)
-            merged["fps_override"] = float(fin.get("fps_override", 0.0) or 0.0)
-            # Final codec wins over the per-stage cache codec on upscale
-            # (upscale-terminal case). The per-stage codec dropdown on
-            # the upscale group is preserved in UI for future non-
-            # terminal use but is effectively dead code today.
-            if fin.get("output_format"):
-                merged["output_format"] = fin["output_format"]
-                merged["prores_profile"] = fin.get(
-                    "prores_profile", merged.get("prores_profile", "4444"))
-            stages.append({
-                "name": STAGE_UPSCALE,
-                "label": "업스케일",
-                "settings": merged,
-                "cache_dir": None,
-                "build": self._build_upscale_worker,
-            })
-
-        # Append a transcode step iff:
-        #   - upscale is disabled (would otherwise apply final params), and
-        #   - final settings would actually change the source
-        # The change check uses the first queued clip as representative,
-        # matching what BatchPage._run displays. This decouples the UI's
-        # provisional _active_stages hint from the orchestrator's actual
-        # decision — both must agree, so the check runs the same is_noop.
-        needs_transcode = (
-            not self._upscale_settings.get("enabled", True)
-            and self._files
-            and not _final_is_noop(self._files[0], self._final_settings)
-        )
-        if needs_transcode:
-            stages.append({
-                "name": STAGE_TRANSCODE,
-                "label": "포맷 정규화",
-                "settings": dict(self._final_settings),
-                "cache_dir": None,
-                "build": self._build_transcode_worker,
-            })
+        stages = self._build_stage_plan()
 
         if not stages:
             self.error.emit(
@@ -436,8 +408,7 @@ class BatchOrchestrator(QThread):
         try:
             # Start clean every run so leftovers from a previous failed
             # batch don't get re-piped into the next.
-            _wipe_dir(BATCH_INPAINT_CACHE)
-            _wipe_dir(BATCH_DENOISE_CACHE)
+            self._cleanup_stage_caches()
 
             self.log.emit(f"배치 시작 — 출력 폴더: {out_dir}")
             self.log.emit("활성 단계: "
@@ -477,18 +448,6 @@ class BatchOrchestrator(QThread):
                     stem = os.path.splitext(
                         os.path.basename(self._files[i - 1]))[0]
                     out = os.path.join(target_dir, f"{stem}{ext}")
-                    # Collision-avoid at EVERY stage. Cache dirs are
-                    # pre-wiped at run start, but pre-wipe only clears
-                    # leftovers from a *previous* run — two queued
-                    # clips with the same basename from different
-                    # source folders would still collide here and the
-                    # second clip would silently overwrite the first
-                    # clip's intermediate, then both downstream stages
-                    # would read identical bytes. _avoid_collision keeps
-                    # each clip on its own unique filename for the
-                    # entire run, so the final folder ends up with two
-                    # genuinely different results (e.g. `scene.mp4` +
-                    # `scene_2.mp4`).
                     out = _avoid_collision(out)
 
                     self.item_status.emit(
@@ -500,8 +459,6 @@ class BatchOrchestrator(QThread):
                     self._current_stage_settings = stage["settings"]
                     worker = stage["build"](src, out)
                     if worker is None:
-                        # Worker construction failed — already-emitted
-                        # error carries the message. Bail.
                         return
                     self._run_worker(worker, stage["name"], i, total)
                     if self._errored:
@@ -523,9 +480,6 @@ class BatchOrchestrator(QThread):
                         self.item_status.emit(
                             i - 1, f"stage_done:{stage['name']}", "")
 
-                # Wipe the PREVIOUS stage's cache as soon as we're done
-                # reading from it. The cache is only useful as input to
-                # the current stage, which we just finished.
                 if stage_idx > 0:
                     prev = stages[stage_idx - 1]
                     if prev["cache_dir"]:
@@ -537,13 +491,88 @@ class BatchOrchestrator(QThread):
 
             self.all_done.emit(out_dir)
         finally:
-            # If the run aborted (cancel/error/exception) before writing
-            # anything into a *default* date-stamped output folder, the
-            # empty folder would otherwise sit on disk and bump the
-            # `_N` suffix counter on the next run. Remove it. Never
-            # touches user-supplied custom paths (out of scope), never
-            # touches a non-empty folder (preserves partial results).
+            # Keep completed deliverables, but never retain potentially
+            # huge intermediate clips after success, error, or cancel.
+            self._cleanup_stage_caches()
             self._cleanup_if_empty_default(out_dir)
+
+    def _cleanup_stage_caches(self) -> None:
+        for path in (BATCH_INPAINT_CACHE, BATCH_DENOISE_CACHE,
+                     BATCH_INTERPOLATION_CACHE):
+            _wipe_dir(path)
+
+    def _build_stage_plan(self) -> List[dict]:
+        """Build the canonical Inpaint→Denoise→Interpolation→Upscale plan."""
+        stages: List[dict] = []
+        if self._inpaint_settings.get("enabled", True):
+            stages.append({
+                "name": STAGE_INPAINT,
+                "label": "인페인트",
+                "settings": self._inpaint_settings,
+                "cache_dir": BATCH_INPAINT_CACHE,
+                "build": self._build_inpaint_worker,
+            })
+        if self._denoise_settings.get("enabled", True):
+            stages.append({
+                "name": STAGE_DENOISE,
+                "label": "디노이즈",
+                "settings": self._denoise_settings,
+                "cache_dir": BATCH_DENOISE_CACHE,
+                "build": self._build_denoise_worker,
+            })
+        if self._interpolation_settings.get("enabled", False):
+            stages.append({
+                "name": STAGE_INTERPOLATION,
+                "label": "프레임 보간",
+                "settings": self._interpolation_settings,
+                "cache_dir": BATCH_INTERPOLATION_CACHE,
+                "build": self._build_interpolation_worker,
+            })
+        if self._upscale_settings.get("enabled", True):
+            # Upscale is always terminal when enabled — inject Final
+            # Output params directly into its settings so the worker
+            # applies aspect / resize / fps / codec inline (single encode).
+            merged = dict(self._upscale_settings)
+            fin = self._final_settings
+            merged["aspect_mode"] = fin.get("aspect_mode", "none")
+            merged["target_long_edge"] = int(fin.get("target_long_edge", 0) or 0)
+            merged["fps_override"] = float(fin.get("fps_override", 0.0) or 0.0)
+            # Final codec wins over the per-stage cache codec on upscale
+            # (upscale-terminal case). The per-stage codec dropdown on
+            # the upscale group is preserved in UI for future non-
+            # terminal use but is effectively dead code today.
+            if fin.get("output_format"):
+                merged["output_format"] = fin["output_format"]
+                merged["prores_profile"] = fin.get(
+                    "prores_profile", merged.get("prores_profile", "4444"))
+            stages.append({
+                "name": STAGE_UPSCALE,
+                "label": "업스케일",
+                "settings": merged,
+                "cache_dir": None,
+                "build": self._build_upscale_worker,
+            })
+
+        # Append a transcode step iff:
+        #   - upscale is disabled (would otherwise apply final params), and
+        #   - final settings would actually change the source
+        # The change check uses the first queued clip as representative,
+        # matching what BatchPage._run displays. This decouples the UI's
+        # provisional _active_stages hint from the orchestrator's actual
+        # decision — both must agree, so the check runs the same is_noop.
+        needs_transcode = needs_terminal_transcode(
+            self._files, self._interpolation_settings,
+            self._upscale_settings, self._final_settings)
+        if needs_transcode:
+            stages.append({
+                "name": STAGE_TRANSCODE,
+                "label": "포맷 정규화",
+                "settings": dict(self._final_settings),
+                "cache_dir": None,
+                "build": self._build_transcode_worker,
+            })
+
+        return stages
 
     def _cleanup_if_empty_default(self, out_dir: str) -> None:
         """Remove `out_dir` iff it's the default date-stamped folder AND
@@ -596,7 +625,12 @@ class BatchOrchestrator(QThread):
                              out, self._device)
 
     def _build_denoise_worker(self, src: str, out: str):
-        return DenoiseWorker(src, self._denoise_settings, out)
+        return create_denoise_worker(src, self._denoise_settings, out)
+
+    def _build_interpolation_worker(self, src: str, out: str):
+        settings = (self._current_stage_settings
+                    or self._interpolation_settings)
+        return InterpolationWorker(src, out, settings, self._device)
 
     def _build_upscale_worker(self, src: str, out: str):
         # settings passed here is the stage's `merged` dict (upscale +

@@ -46,6 +46,7 @@ DEFAULT_SETTINGS = {
     "flow_iterations": 4,
     "color_threshold": 0.020,
     "scene_threshold": 0.030,
+    "scene_detection_mode": "mse",
     "batch_size": 24,
     "precision": "bf16",          # bf16 | fp32
     "flow_scale": 0.5,            # 0.3..1.0 — flow res relative to full

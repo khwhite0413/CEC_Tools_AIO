@@ -25,9 +25,12 @@ from PyQt5.QtCore import QThread, pyqtSignal
 from fdcore.video_io import (VideoInfo, FFmpegWriter, SingleImageWriter,
                              is_image_file, bgr24_to_bgr48le)
 from vdcore.video_io import SequentialFrameReader
-from vdcore.inpaint_chunking import iter_context_windows, resolve_window_size
+from vdcore.inpaint_chunking import (iter_context_windows, resolve_window_size,
+                                     split_window_on_boundaries)
 from vdcore.mask_manager import mask_to_binary
 from vdcore.inpaint_engine import InpaintEngine
+from fdcore.scene_detection import (DEFAULT_SCENE_MSE_THRESHOLD,
+                                    detect_scene_boundaries)
 
 
 class _InpaintCancelled(Exception):
@@ -166,72 +169,98 @@ class InpaintWorker(QThread):
             for frames, keep_start, keep_end in windows:
                 if self._cancelled or self.isInterruptionRequested():
                     break
-                output_count = keep_end - keep_start
+                boundaries = detect_scene_boundaries(
+                    frames,
+                    mode=self.settings.get("scene_detection_mode", "mse"),
+                    mse_threshold=float(self.settings.get(
+                        "scene_threshold", DEFAULT_SCENE_MSE_THRESHOLD)),
+                    mse_size=(160, 90))
+                scene_windows = split_window_on_boundaries(
+                    frames, keep_start, keep_end, boundaries)
+                cancelled_window = False
+                for scene_frames, scene_keep_start, scene_keep_end in scene_windows:
+                    output_count = scene_keep_end - scene_keep_start
+                    cropped_frames = [
+                        f[y1:y2, x1:x2].copy() for f in scene_frames]
+                    crop_h, crop_w = cropped_mask.shape[:2]
 
-                cropped_frames = [f[y1:y2, x1:x2].copy() for f in frames]
-                crop_h, crop_w = cropped_mask.shape[:2]
-
-                # ProPainter operates well near 720p — upscale crop if the
-                # source resolution is much larger, run inference, then
-                # downscale back.
-                mask_scale = max(
-                    info.height / 720.0, info.width / 1280.0, 1.0)
-                if mask_scale > 1.01:
-                    proc_w = ((int(crop_w * mask_scale) + 7) // 8) * 8
-                    proc_h = ((int(crop_h * mask_scale) + 7) // 8) * 8
-                    proc_frames = [cv2.resize(f, (proc_w, proc_h),
-                                              interpolation=cv2.INTER_CUBIC)
-                                   for f in cropped_frames]
-                    proc_mask = cv2.resize(cropped_mask, (proc_w, proc_h),
-                                           interpolation=cv2.INTER_NEAREST)
-                else:
-                    proc_frames = cropped_frames
-                    proc_mask = cropped_mask
-                    proc_w, proc_h = crop_w, crop_h
-
-                offset = processed
-
-                def on_progress(cur, total, _o=offset):
-                    if self._cancelled or self.isInterruptionRequested():
-                        raise _InpaintCancelled()
-                    ratio = min(1.0, max(0.0, cur / max(1, total)))
-                    done = _o + int(round(ratio * output_count))
-                    self.progress.emit(done, max(total_frames, done))
-
-                try:
-                    inpainted = engine.inpaint_frames(
-                        proc_frames, proc_mask, self.settings,
-                        progress_callback=on_progress)
-                except _InpaintCancelled:
-                    break
-
-                if len(inpainted) != len(frames):
-                    raise RuntimeError(
-                        "인페인트 결과 프레임 수가 입력과 다릅니다: "
-                        f"입력 {len(frames)}, 결과 {len(inpainted)}")
-
-                if proc_w != crop_w or proc_h != crop_h:
-                    inpainted = [cv2.resize(r, (crop_w, crop_h),
-                                            interpolation=cv2.INTER_CUBIC)
-                                 for r in inpainted]
-
-                written_this_window = 0
-                for i in range(keep_start, keep_end):
-                    if self._cancelled or self.isInterruptionRequested():
-                        break
-                    frame = frames[i]
-                    result = frame.copy()
-                    result[y1:y2, x1:x2] = inpainted[i]
-                    if is_img_out:
-                        writer.write(result)
+                    # ProPainter operates well near 720p — upscale crop if
+                    # the source resolution is much larger, run inference,
+                    # then downscale back.
+                    mask_scale = max(
+                        info.height / 720.0, info.width / 1280.0, 1.0)
+                    if mask_scale > 1.01:
+                        proc_w = ((int(crop_w * mask_scale) + 7) // 8) * 8
+                        proc_h = ((int(crop_h * mask_scale) + 7) // 8) * 8
+                        proc_frames = [
+                            cv2.resize(f, (proc_w, proc_h),
+                                       interpolation=cv2.INTER_CUBIC)
+                            for f in cropped_frames]
+                        proc_mask = cv2.resize(
+                            cropped_mask, (proc_w, proc_h),
+                            interpolation=cv2.INTER_NEAREST)
                     else:
-                        writer.write(bgr24_to_bgr48le(result))
-                    written_this_window += 1
+                        proc_frames = cropped_frames
+                        proc_mask = cropped_mask
+                        proc_w, proc_h = crop_w, crop_h
 
-                processed += written_this_window
-                self.progress.emit(processed, max(total_frames, processed))
+                    offset = processed
 
-                del frames, cropped_frames, proc_frames, inpainted
+                    def on_progress(cur, total, _o=offset, _n=output_count):
+                        if self._cancelled or self.isInterruptionRequested():
+                            raise _InpaintCancelled()
+                        ratio = min(1.0, max(0.0, cur / max(1, total)))
+                        done = _o + int(round(ratio * _n))
+                        self.progress.emit(done, max(total_frames, done))
+
+                    try:
+                        # ProPainter's RAFT path needs at least one frame
+                        # pair. A cut can legitimately isolate a one-frame
+                        # scene, so duplicate that frame only inside the
+                        # model call and discard the duplicate afterwards.
+                        model_frames = (proc_frames if len(proc_frames) > 1
+                                        else proc_frames + [proc_frames[0].copy()])
+                        inpainted = engine.inpaint_frames(
+                            model_frames, proc_mask, self.settings,
+                            progress_callback=on_progress)
+                    except _InpaintCancelled:
+                        cancelled_window = True
+                        break
+
+                    inpainted = inpainted[:len(scene_frames)]
+
+                    if len(inpainted) != len(scene_frames):
+                        raise RuntimeError(
+                            "인페인트 결과 프레임 수가 입력과 다릅니다: "
+                            f"입력 {len(scene_frames)}, 결과 {len(inpainted)}")
+
+                    if proc_w != crop_w or proc_h != crop_h:
+                        inpainted = [
+                            cv2.resize(r, (crop_w, crop_h),
+                                       interpolation=cv2.INTER_CUBIC)
+                            for r in inpainted]
+
+                    written_this_window = 0
+                    for i in range(scene_keep_start, scene_keep_end):
+                        if self._cancelled or self.isInterruptionRequested():
+                            cancelled_window = True
+                            break
+                        frame = scene_frames[i]
+                        result = frame.copy()
+                        result[y1:y2, x1:x2] = inpainted[i]
+                        if is_img_out:
+                            writer.write(result)
+                        else:
+                            writer.write(bgr24_to_bgr48le(result))
+                        written_this_window += 1
+
+                    processed += written_this_window
+                    self.progress.emit(processed, max(total_frames, processed))
+                    del cropped_frames, proc_frames, model_frames, inpainted
+                    if cancelled_window:
+                        break
+                if cancelled_window:
+                    break
 
             if self._cancelled or self.isInterruptionRequested():
                 reader.release()

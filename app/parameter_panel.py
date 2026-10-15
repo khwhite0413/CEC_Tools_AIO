@@ -14,6 +14,7 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
                               QSizePolicy)
 
 from app.i18n import tr
+from app.denoise_models import DENOISE_MODELS, DEFAULT_DENOISE_MODEL
 
 
 _FORMAT_KEYS = ("h264", "prores", "image_seq")
@@ -74,6 +75,31 @@ class ParameterPanel(QWidget):
         super().__init__(parent)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+
+        # --- Denoise engine drawer ---
+        model_box = QGroupBox(tr("denoise_section_model"))
+        model_form = QFormLayout(model_box)
+        model_form.setLabelAlignment(Qt.AlignRight)
+        self.model_combo = QComboBox()
+        for key, info in DENOISE_MODELS.items():
+            self.model_combo.addItem(info["label"], key)
+            idx = self.model_combo.count() - 1
+            self.model_combo.setItemData(
+                idx, tr(info["description_key"]), Qt.ToolTipRole)
+        self.model_combo.setCurrentIndex(
+            list(DENOISE_MODELS).index(DEFAULT_DENOISE_MODEL))
+        model_form.addRow(tr("denoise_label_model"), self.model_combo)
+        layout.addWidget(model_box)
+
+        # FastDVDnet has one meaningful user-facing parameter: the noise
+        # sigma assumed by the pretrained AWGN model (official range 5-55).
+        self.fastdvdnet_params = QGroupBox("FastDVDnet")
+        fast_form = QFormLayout(self.fastdvdnet_params)
+        fast_form.setLabelAlignment(Qt.AlignRight)
+        sigma_widget, self.noise_sigma = _slider_with_spin(
+            25, 5, 55, tooltip=tr("denoise_tooltip_sigma"))
+        fast_form.addRow(tr("denoise_label_sigma"), sigma_widget)
+        layout.addWidget(self.fastdvdnet_params)
 
         # --- Temporal Flow Average ---
         # The title + dev-mode toggle live OUTSIDE the bordered box so they
@@ -176,6 +202,13 @@ class ParameterPanel(QWidget):
         pre_form.addRow("scene_threshold", self.scene_threshold)
 
         # --- always-visible row ---
+        self.scene_detection_mode = QComboBox()
+        self.scene_detection_mode.addItem(tr("scene_detection_mse"), "mse")
+        self.scene_detection_mode.addItem(
+            tr("scene_detection_adaptive"), "pyscenedetect")
+        self.scene_detection_mode.setToolTip(tr("scene_detection_tooltip"))
+        basic_form.addRow(tr("scene_detection_label"), self.scene_detection_mode)
+
         bs_widget, self.batch_size = _slider_with_spin(
             24, 1, 128, tooltip=tr("tooltip_batch_size"))
         basic_form.addRow("batch_size", bs_widget)
@@ -218,12 +251,15 @@ class ParameterPanel(QWidget):
 
         section_lay.addWidget(tfa_box)
         tfa = section  # used by the addWidget call below
+        self.flow_params = section
 
         layout.addWidget(tfa)
 
         # Wire after rows exist so the initial _apply_dev_mode finds them.
         self.dev_mode.toggled.connect(self._apply_dev_mode)
         self._apply_dev_mode(False)  # default: hide advanced params
+        self.model_combo.currentIndexChanged.connect(self._on_model_changed)
+        self._on_model_changed(self.model_combo.currentIndex())
 
         # --- Noise preview (drawer) ---
         npv = QGroupBox(tr("section_noise_preview"))
@@ -396,6 +432,14 @@ class ParameterPanel(QWidget):
         for w in self._adv_widgets:
             w.setVisible(on)
 
+    def _on_model_changed(self, _idx: int) -> None:
+        is_fast = self.current_model() == "fastdvdnet"
+        self.fastdvdnet_params.setVisible(is_fast)
+        self.flow_params.setVisible(not is_fast)
+
+    def current_model(self) -> str:
+        return self.model_combo.currentData() or DEFAULT_DENOISE_MODEL
+
     def _on_format_changed(self, idx: int):
         if idx < 0 or idx >= len(_FORMAT_KEYS):
             return
@@ -407,12 +451,15 @@ class ParameterPanel(QWidget):
         fmt_idx = self.output_format.currentIndex()
         prof_idx = self.prores_profile.currentIndex()
         out = {
+            "denoise_model": self.current_model(),
+            "noise_sigma": self.noise_sigma.value(),
             "window_size": self.window_size.value(),
             "weight_decay": self.weight_decay.value(),
             "flow_model": self.flow_model.currentText(),
             "flow_iterations": self.flow_iterations.value(),
             "color_threshold": self.color_threshold.value(),
             "scene_threshold": self.scene_threshold.value(),
+            "scene_detection_mode": self.scene_detection_mode.currentData() or "mse",
             "batch_size": self.batch_size.value(),
             "precision": self.precision.currentText(),
             "flow_scale": self.flow_scale.value(),

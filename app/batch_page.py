@@ -397,7 +397,7 @@ class BatchPage(QWidget):
         # for a parallel hand-rolled checkbox + manual setEnabled chain.
         self.inp_box = QGroupBox(tr("batch_section_inpaint"))
         self.inp_box.setCheckable(True)
-        self.inp_box.setChecked(True)
+        self.inp_box.setChecked(False)
         inp_lay = QFormLayout(self.inp_box)
         inp_lay.setSpacing(6)
         self.inp_preset = QComboBox()
@@ -438,7 +438,7 @@ class BatchPage(QWidget):
         # ----- Stage 2: Denoise -----
         self.den_box = QGroupBox(tr("batch_section_denoise"))
         self.den_box.setCheckable(True)
-        self.den_box.setChecked(True)
+        self.den_box.setChecked(False)
         den_lay = QFormLayout(self.den_box)
         den_lay.setSpacing(6)
 
@@ -574,7 +574,7 @@ class BatchPage(QWidget):
         # container format.
         self.ups_box = QGroupBox(tr("batch_section_upscale"))
         self.ups_box.setCheckable(True)
-        self.ups_box.setChecked(True)
+        self.ups_box.setChecked(False)
         ups_lay = QFormLayout(self.ups_box)
         ups_lay.setSpacing(6)
         # Cascading family → variant dropdowns. Same widget names /

@@ -1,4 +1,5 @@
 @echo off
+chcp 65001 >NUL 2>&1
 setlocal enableextensions enabledelayedexpansion
 title CEC All-In-One Updater
 
@@ -79,16 +80,12 @@ REM robocopy from staging → project root.
 REM   /E                 include subdirs (even empty)
 REM   /XD ...            skip user data + generated dirs. Anything in
 REM                      this list stays untouched on the user's disk.
-REM   /XF updater.bat    the file we're running from is Windows-locked
-REM                      right now; robocopy would skip it anyway but
-REM                      being explicit avoids a warning line in the log.
 REM   /NFL /NDL /NP      quiet output (no per-file/per-dir/no-progress)
 REM   /R:1 /W:1          minimal retry — we don't want a permission-denied
 REM                      loop stalling the whole update
 REM Exit code:  0..7 = success, 8+ = errors
 robocopy "%SRC%" "%DST%" /E ^
     /XD weights python ffmpeg cache output logs debug .git __pycache__ ^
-    /XF updater.bat ^
     /NFL /NDL /NP /R:1 /W:1 >> "%LOG%"
 
 if errorlevel 8 (
@@ -105,12 +102,19 @@ REM LF-only line endings depending on .gitattributes, and cmd.exe's
 REM parser chokes on them mid-script — `setlocal enabledelayedexpansion`
 REM gets read as the mysterious command `tlocal`, multi-line `if (`
 REM blocks fragment into isolated "not recognized" errors, etc. This
-REM step runs a python one-liner to normalize every .bat we just
-REM copied. Uses the embedded python we know is installed at
-REM %DST%\python\python.exe. Safe to no-op if python is missing —
-REM setup.bat will just fail the same way it would have anyway.
+REM Use a standalone helper so install paths are passed as argv instead of
+REM being interpolated into Python source. Each changed file is written to a
+REM temporary sibling and atomically replaced; updater.bat itself is skipped.
 >> "%LOG%" echo Normalizing .bat line endings (LF -^> CRLF) after robocopy...
-"%DST%\python\python.exe" -c "import glob,os;[open(f,'wb').write(open(f,'rb').read().replace(b'\r\n',b'\n').replace(b'\n',b'\r\n')) for f in glob.glob(os.path.join(r'%DST%','*.bat'))]" >> "%LOG%" 2>&1
+"%DST%\python\python.exe" "%DST%\app\updater_files.py" "%DST%" >> "%LOG%" 2>&1
+if errorlevel 1 (
+    echo.
+    echo 배치 파일 정규화 실패. 자세한 내용은 로그 확인:
+    echo   %LOG%
+    >> "%LOG%" echo Batch file normalization FAILED with exit code %errorlevel%
+    pause
+    goto :end
+)
 
 echo [2/3] 신규 의존성 확인 (setup.bat)...
 echo.

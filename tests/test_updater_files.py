@@ -21,7 +21,7 @@ def test_normalize_root_batch_files_is_atomic_and_skips_updater(tmp_path):
 
     changed = normalize_root_batch_files(tmp_path)
 
-    assert changed == (setup, run)
+    assert changed == (run, setup)
     assert setup.read_bytes() == b"@echo off\r\necho setup\r\n"
     assert run.read_bytes() == b"@echo off\r\necho run\r\n"
     assert updater.read_bytes() == updater_bytes

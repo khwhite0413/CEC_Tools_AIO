@@ -3,9 +3,9 @@
 Runs when the user clicks "지금 업데이트" in the update prompt. Downloads
 the release zipball through the Cloudflare Worker proxy (which does the
 GitHub auth for our private repo), extracts to a temp staging dir, then
-kicks the static `updater.bat` at the project root with PID + src + dst
-args. Then the caller quits the app so updater.bat can safely overwrite
-source files (Windows locks .py files that are still imported).
+copies the downloaded `updater.bat` to an isolated temp folder and launches
+it with PID + src + dst args. Then the caller quits the app so updater.bat
+can safely overwrite source files (Windows locks imported .py files).
 
 Sequence:
     UpdaterWorker.run()            [QThread — download + extract only]
@@ -13,7 +13,7 @@ Sequence:
       finished_ok(staging_dir)
         → caller: kick_updater_bat(staging_dir)
         → caller: QApplication.quit()
-    updater.bat                     [detached cmd process]
+    downloaded updater.bat          [detached cmd process]
       waits for app PID to exit
       robocopy staging_dir → project root
         (skips weights/, python/, ffmpeg/, cache/, output/, logs/)
@@ -25,6 +25,7 @@ Sequence:
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -128,20 +129,20 @@ class UpdaterWorker(QThread):
 
 
 def kick_updater_bat(src_root: str) -> None:
-    """Spawn the static updater.bat at project root with PID + paths as
-    args, detached so it survives our own process exit. The caller MUST
-    call QApplication.quit() (or os._exit) shortly after this — the .bat
-    waits for our PID to disappear before touching any source files.
+    """Launch the downloaded updater from an isolated temporary folder.
 
-    Raises RuntimeError if updater.bat is missing (release without it,
-    or user deleted it) — the caller surfaces that to the user rather
-    than silently no-op'ing.
+    Running the downloaded helper lets robocopy replace the installed
+    ``updater.bat`` too, so updater fixes are not permanently pinned to the
+    version that happened to be installed first.
     """
-    bat_path = os.path.join(_PROJECT_ROOT, "updater.bat")
-    if not os.path.isfile(bat_path):
+    staged_bat = os.path.join(os.path.abspath(src_root), "updater.bat")
+    if not os.path.isfile(staged_bat):
         raise RuntimeError(
-            "updater.bat 이 프로젝트 루트에 없습니다. "
-            "GitHub 릴리즈에서 수동으로 최신 ZIP 을 받아 재설치해주세요.")
+            "다운로드한 릴리즈에 updater.bat 이 없습니다. "
+            "업데이트 파일을 다시 받아주세요.")
+
+    helper_dir = tempfile.mkdtemp(prefix="cec_aio_updater_")
+    bat_path = os.path.join(helper_dir, "updater.bat")
 
     pid = os.getpid()
 
@@ -158,13 +159,18 @@ def kick_updater_bat(src_root: str) -> None:
     flags = (subprocess.DETACHED_PROCESS
              | subprocess.CREATE_NEW_PROCESS_GROUP)
 
-    subprocess.Popen(
-        ["cmd", "/c", "start", "",
-         bat_path, str(pid), src_root, _PROJECT_ROOT],
-        cwd=_PROJECT_ROOT,
-        creationflags=flags,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        close_fds=True,
-    )
+    try:
+        shutil.copy2(staged_bat, bat_path)
+        subprocess.Popen(
+            ["cmd", "/c", "start", "",
+             bat_path, str(pid), src_root, _PROJECT_ROOT],
+            cwd=_PROJECT_ROOT,
+            creationflags=flags,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+        )
+    except Exception:
+        shutil.rmtree(helper_dir, ignore_errors=True)
+        raise
